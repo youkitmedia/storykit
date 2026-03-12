@@ -130,16 +130,14 @@ layout 타입: title_only, concept, emphasis, question, summary
     try {
       let clean = rawText.trim();
 
-      // 코드블록 제거
-      if (clean.startsWith("```")) {
-        clean = clean.split("\n").slice(1).join("\n");
-      }
-      if (clean.endsWith("```")) {
-        clean = clean.split("\n").slice(0, -1).join("\n");
-      }
-      clean = clean.trim();
+      // 모든 코드블록 패턴 제거 (가장 확실한 방법)
+      clean = clean
+        .replace(/^```json/m, "")
+        .replace(/^```/m, "")
+        .replace(/```$/m, "")
+        .trim();
 
-      // { } 범위만 추출
+      // { 시작 ~ } 끝 사이만 추출
       const jsonStart = clean.indexOf("{");
       const jsonEnd = clean.lastIndexOf("}");
       if (jsonStart !== -1 && jsonEnd !== -1) {
