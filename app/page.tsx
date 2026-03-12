@@ -521,6 +521,12 @@ function SlideView({
 
 // ── AI 패널 ───────────────────────────────────────────
 interface AiStep { label: string; status: "pending" | "loading" | "done"; }
+interface AiHistoryItem {
+  id: number;
+  request: string;
+  summary: string;
+  timestamp: string;
+}
 
 function AiPanel({
   collapsed, onToggle, currentPage, width, onApply
@@ -532,17 +538,17 @@ function AiPanel({
   const [input, setInput] = useState("");
   const [isProcessing, setIsProcessing] = useState(false);
   const [steps, setSteps] = useState<AiStep[]>([]);
-  const [result, setResult] = useState<string | null>(null);
+  const [history, setHistory] = useState<AiHistoryItem[]>([]);
   const bottomRef = useRef<HTMLDivElement>(null);
+  const historyIdRef = useRef(0);
 
-  useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: "smooth" }); }, [steps, result]);
+  useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: "smooth" }); }, [steps, history]);
 
   const handleSend = async () => {
     if (!input.trim() || isProcessing) return;
     const userRequest = input.trim();
     setInput("");
     setIsProcessing(true);
-    setResult(null);
     setSteps([
       { label: "요청 분석 중...", status: "loading" },
       { label: "슬라이드 구조 파악 중...", status: "pending" },
@@ -574,21 +580,33 @@ function AiPanel({
       setSteps(s => s.map(st => ({ ...st, status: "done" })));
       await new Promise(r => setTimeout(r, 300));
 
+      const summary = data.result?.summary || "수정이 적용되었습니다.";
+
       if (data.result?.slide) {
-        // 슬라이드 실제 반영
         onApply(data.result.slide, data.result.narration || currentPage.narration);
-        setResult(data.result.summary || "수정이 적용되었습니다.");
-      } else if (data.result?.summary) {
-        setResult(data.result.summary);
-      } else {
-        setResult(typeof data.result === "string" ? data.result : "처리 완료");
       }
+
+      // 히스토리에 추가
+      const now = new Date();
+      const timestamp = `${now.getHours().toString().padStart(2, "0")}:${now.getMinutes().toString().padStart(2, "0")}`;
+      setHistory(h => [...h, {
+        id: ++historyIdRef.current,
+        request: userRequest,
+        summary,
+        timestamp,
+      }]);
+
     } catch {
-      setSteps(s => s.map(st => ({ ...st, status: "done" })));
-      setResult("오류가 발생했습니다. 다시 시도해주세요.");
+      setHistory(h => [...h, {
+        id: ++historyIdRef.current,
+        request: userRequest,
+        summary: "오류가 발생했습니다. 다시 시도해주세요.",
+        timestamp: new Date().toLocaleTimeString("ko-KR", { hour: "2-digit", minute: "2-digit" }),
+      }]);
     }
 
-    setTimeout(() => { setIsProcessing(false); setSteps([]); setResult(null); }, 5000);
+    setSteps([]);
+    setIsProcessing(false);
   };
 
   if (collapsed) return (
@@ -607,11 +625,20 @@ function AiPanel({
           <span className="text-xs">✦</span>
           <span className="font-bold text-[13px] text-foreground">AI 수정 요청</span>
         </div>
-        <Button variant="ghost" size="icon" onClick={onToggle} className="text-muted-foreground h-6 w-6">
-          <ChevronLeft size={14} />
-        </Button>
+        <div className="flex items-center gap-1.5">
+          {history.length > 0 && (
+            <Button variant="ghost" size="sm" onClick={() => setHistory([])}
+              className="text-[10px] text-muted-foreground h-5 px-1.5">
+              기록 삭제
+            </Button>
+          )}
+          <Button variant="ghost" size="icon" onClick={onToggle} className="text-muted-foreground h-6 w-6">
+            <ChevronLeft size={14} />
+          </Button>
+        </div>
       </div>
 
+      {/* 입력창 */}
       <div className="px-3 py-2.5 border-b border-border shrink-0">
         <div className="flex gap-1.5 items-end">
           <Textarea value={input} onChange={e => setInput(e.target.value)}
@@ -626,8 +653,44 @@ function AiPanel({
         <div className="mt-1.5 text-[10px] text-muted-foreground">Enter: 전송 / Shift+Enter: 줄바꿈</div>
       </div>
 
-      <div className="flex-1 overflow-y-auto px-3 py-3">
-        {steps.length > 0 && (
+      {/* 히스토리 + 진행상태 */}
+      <div className="flex-1 overflow-y-auto px-3 py-3 flex flex-col gap-2">
+
+        {/* 히스토리 없고 처리 중도 아닐 때 */}
+        {history.length === 0 && !isProcessing && (
+          <div className="text-center py-8">
+            <div className="text-2xl mb-2 opacity-40">💡</div>
+            <p className="text-xs text-muted-foreground/60 leading-relaxed">
+              현재 슬라이드에 대한<br />수정 요청을 입력하세요.
+            </p>
+          </div>
+        )}
+
+        {/* 히스토리 목록 */}
+        {history.map(item => (
+          <div key={item.id} className="flex flex-col gap-1.5">
+            {/* 요청 말풍선 */}
+            <div className="flex justify-end">
+              <div className="bg-primary text-primary-foreground rounded-xl rounded-tr-sm px-3 py-2 max-w-[85%]">
+                <p className="text-[11px] leading-relaxed">{item.request}</p>
+              </div>
+            </div>
+            {/* 결과 말풍선 */}
+            <div className="flex justify-start">
+              <div className="bg-muted border border-border rounded-xl rounded-tl-sm px-3 py-2 max-w-[85%]">
+                <div className="flex items-center gap-1 mb-1">
+                  <CheckCircle size={10} className="text-emerald-500" />
+                  <span className="text-[10px] font-bold text-emerald-600">적용 완료</span>
+                  <span className="text-[10px] text-muted-foreground ml-auto">{item.timestamp}</span>
+                </div>
+                <p className="text-[11px] text-foreground leading-relaxed">{item.summary}</p>
+              </div>
+            </div>
+          </div>
+        ))}
+
+        {/* 진행 중 */}
+        {isProcessing && (
           <div className="bg-muted/50 border border-border rounded-lg p-3">
             {steps.map((step, i) => (
               <div key={i} className="flex items-center gap-2 mb-2 last:mb-0">
@@ -640,25 +703,9 @@ function AiPanel({
                 </span>
               </div>
             ))}
-            {result && (
-              <div className="mt-3 pt-3 border-t border-border">
-                <div className="flex items-center gap-1.5 mb-1.5">
-                  <CheckCircle size={12} className="text-emerald-500" />
-                  <span className="text-[11px] font-bold text-emerald-600">완료</span>
-                </div>
-                <p className="text-xs text-foreground leading-relaxed">{result}</p>
-              </div>
-            )}
           </div>
         )}
-        {!isProcessing && steps.length === 0 && (
-          <div className="text-center py-8">
-            <div className="text-2xl mb-2 opacity-40">💡</div>
-            <p className="text-xs text-muted-foreground/60 leading-relaxed">
-              현재 슬라이드에 대한<br />수정 요청을 입력하세요.
-            </p>
-          </div>
-        )}
+
         <div ref={bottomRef} />
       </div>
     </div>
