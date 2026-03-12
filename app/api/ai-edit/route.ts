@@ -12,7 +12,7 @@ export async function POST(req: NextRequest) {
         "anthropic-version": "2023-06-01",
       },
       body: JSON.stringify({
-        model: "claude-sonnet-4-20250514",
+        model: ""claude-sonnet-4-5"",
         max_tokens: 1024,
         system: `당신은 이러닝 콘텐츠 스토리보드 편집 AI 어시스턴트입니다.
 사용자가 슬라이드 수정을 요청하면 현재 슬라이드 컨텍스트를 분석하고 수정 내용을 요약해서 제공합니다.
