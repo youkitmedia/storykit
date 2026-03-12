@@ -61,25 +61,15 @@ function UploadScreen({ onNext }: { onNext: (pdfText: string, fileName: string) 
   const [isReading, setIsReading] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const handleFile = async (file: File) => {
+const handleFile = async (file: File) => {
     setFileName(file.name);
     setIsReading(true);
     try {
-      // PDF를 텍스트로 읽기 (간단한 방법: FileReader로 raw text 시도)
-      const text = await file.text().catch(() => "");
-      // PDF binary에서 텍스트 추출 시도
-      const reader = new FileReader();
-      reader.onload = (e) => {
-        const content = e.target?.result as string;
-        // 간단한 텍스트 추출 (실제로는 pdf-parse 같은 라이브러리 사용 권장)
-        const extracted = content.replace(/[^\x20-\x7E\uAC00-\uD7A3\u3130-\u318F]/g, " ")
-          .replace(/\s+/g, " ").trim();
-        setPdfText(extracted || file.name);
-        setIsReading(false);
-      };
-      reader.readAsBinaryString(file);
+      const text = await file.text();
+      setPdfText(text);
     } catch {
       setPdfText(file.name);
+    } finally {
       setIsReading(false);
     }
   };
