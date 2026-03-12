@@ -124,7 +124,13 @@ layout 타입: title_only, concept, emphasis, question, summary
 
     // JSON 파싱 시도
     try {
-      const clean = rawText.replace(/```json|```/g, "").trim();
+      let clean = rawText.trim();
+      clean = clean.replace(/^```json\s*/i, "").replace(/\s*```\s*$/g, "").trim();
+      const jsonStart = clean.indexOf("{");
+      const jsonEnd = clean.lastIndexOf("}");
+      if (jsonStart !== -1 && jsonEnd !== -1) {
+        clean = clean.substring(jsonStart, jsonEnd + 1);
+      }
       const parsed = JSON.parse(clean);
       return NextResponse.json({ result: parsed, raw: rawText });
     } catch {
