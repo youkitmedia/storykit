@@ -245,8 +245,28 @@ function GeneratingScreen({
         setStatusMsg("스토리보드 생성 완료!");
 
         if (data.result?.pages) {
-          const pages: Page[] = data.result.pages.map((p: Omit<Page, "id">, i: number) => ({
-            ...p, id: i + 1,
+          const pages: Page[] = data.result.pages.map((p: any, i: number) => ({
+            id: i + 1,
+            page_id: p.page_id || `${i + 1}`,
+            course: p.course || "",
+            week: p.week || "",
+            chapter_index: p.chapter_index ?? i,
+            item_index: p.item_index ?? 0,
+            status: (p.status as Page["status"]) || "review",
+            slide: {
+              title: p.slide?.title || p.title || "",
+              subtitle: p.slide?.subtitle || p.subtitle || "",
+              layout: p.slide?.layout || p.layout || "concept",
+              elements: (p.slide?.elements || p.elements || []).map((el: any, ei: number) => ({
+                id: el.id || `el-${ei + 1}`,
+                order: el.order ?? ei + 1,
+                type: el.type || "heading",
+                text: el.text || el.content || "",
+                items: el.items || [],
+              })),
+            },
+            screen_desc: p.screen_desc || "",
+            narration: p.narration || "",
           }));
           setTimeout(() => onDone(
             pages,
