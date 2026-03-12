@@ -11,15 +11,18 @@ export async function POST(req: NextRequest) {
 PDF 원고를 분석하여 스토리보드 페이지 배열을 JSON으로 생성하세요.
 
 슬라이드 생성 규칙:
+- 원고 내용을 충실히 반영하여 실제 강의 내용으로 슬라이드 생성
+- 원고에서 과정명, 주차, 챕터 정보를 추출하여 course, week, index에 반영
 - 도입(학습목표) → 본학습(개념 설명) → 정리(요약) 구조
 - 한 슬라이드당 핵심 개념 1개
-- 나레이션 1페이지당 150~200자
+- slide.title과 slide.subtitle 반드시 원고 내용 기반으로 채울 것
+- 나레이션은 원고 문장을 직접 활용, 1페이지당 150~200자
 - 반드시 5~10개 페이지 생성
 
 element 타입: heading(제목), subtitle_text(보조설명), circles(병렬개념 3~5개), bullets(항목나열 3~5개), emphasis(강조 노란박스), question(질문 파란박스)
 layout 타입: title_only, concept, emphasis, question, summary
 
-JSON만 출력하세요. 코드블록 없이 { 로 시작해서 } 로 끝내세요.`
+JSON만 출력하세요. { 로 시작해서 } 로 끝내세요.`
       : `당신은 이러닝 콘텐츠 스토리보드 편집 AI입니다.
 현재 슬라이드: ${JSON.stringify(slideContext)}
 사용자 요청에 따라 슬라이드를 수정하고 JSON만 출력하세요. { 로 시작해서 } 로 끝내세요.`;
