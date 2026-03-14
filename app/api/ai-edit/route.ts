@@ -1,7 +1,4 @@
 import { NextRequest, NextResponse } from "next/server";
-// Turbopack/ESM 호환: require 방식으로 import
-// eslint-disable-next-line @typescript-eslint/no-require-imports
-const pdfParse = require("pdf-parse") as (buffer: Buffer) => Promise<{ text: string }>
 
 export async function POST(req: NextRequest) {
   try {
@@ -12,14 +9,8 @@ export async function POST(req: NextRequest) {
     console.log("[ai-edit] pdfText preview:", pdfText?.substring(0, 100));
     console.log("[ai-edit] message:", message?.substring(0, 50));
 
-    // PDF base64 감지 → 텍스트 추출
-    let extractedText = pdfText || "";
-    if (extractedText.startsWith("__PDF_BASE64__:")) {
-      const base64Data = extractedText.replace("__PDF_BASE64__:", "");
-      const buffer = Buffer.from(base64Data, "base64");
-      const parsed = await pdfParse(buffer);
-      extractedText = parsed.text;
-    }
+    // page.tsx에서 이미 텍스트 추출 완료 후 전달 → 서버에서 별도 파싱 불필요
+    const extractedText = (pdfText || "").trim();
     const isGenerateMode = !!extractedText;
     console.log("[ai-edit] isGenerateMode:", isGenerateMode, "extractedText length:", extractedText.length);
 
