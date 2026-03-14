@@ -6,6 +6,12 @@ const pdfParse = require("pdf-parse") as (buffer: Buffer) => Promise<{ text: str
 export async function POST(req: NextRequest) {
   try {
     const { message, slideContext, pdfText } = await req.json();
+
+    // ── 디버그 로그 ──
+    console.log("[ai-edit] pdfText length:", pdfText?.length ?? 0);
+    console.log("[ai-edit] pdfText preview:", pdfText?.substring(0, 100));
+    console.log("[ai-edit] message:", message?.substring(0, 50));
+
     // PDF base64 감지 → 텍스트 추출
     let extractedText = pdfText || "";
     if (extractedText.startsWith("__PDF_BASE64__:")) {
@@ -15,6 +21,7 @@ export async function POST(req: NextRequest) {
       extractedText = parsed.text;
     }
     const isGenerateMode = !!extractedText;
+    console.log("[ai-edit] isGenerateMode:", isGenerateMode, "extractedText length:", extractedText.length);
 
     // ════════════════════════════════════════════════════════
     // 생성 모드: 원고 → 스토리보드
@@ -273,6 +280,8 @@ JSON만 출력하세요. { 로 시작해서 } 로 끝내세요.`;
     const data = await response.json();
     const rawText = assistantPrefill + (data.content?.[0]?.text || "");
 
+    console.log("[ai-edit] rawText preview:", rawText.substring(0, 200));
+
     try {
       const jsonStart = rawText.indexOf("{");
       const jsonEnd = rawText.lastIndexOf("}");
@@ -280,9 +289,10 @@ JSON만 출력하세요. { 로 시작해서 } 로 끝내세요.`;
 
       const clean = rawText.substring(jsonStart, jsonEnd + 1);
       const parsed = JSON.parse(clean);
+      console.log("[ai-edit] parsed pages count:", parsed.pages?.length ?? 0);
       return NextResponse.json({ result: parsed, raw: rawText });
-    } catch {
-      console.error("JSON parse failed, raw:", rawText.substring(0, 300));
+    } catch (parseErr) {
+      console.error("JSON parse failed:", parseErr, "raw:", rawText.substring(0, 500));
       return NextResponse.json({ result: null, raw: rawText });
     }
   } catch (error) {
