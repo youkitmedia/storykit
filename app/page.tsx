@@ -270,30 +270,59 @@ function GeneratingScreen({
         setStatusMsg("스토리보드 생성 완료!");
 
         if (data.result?.pages) {
-          const pages: Page[] = data.result.pages.map((p: any, i: number) => ({
-            id: i + 1,
-            page_id: p.page_id || `${i + 1}`,
-            course: p.course || "",
-            week: p.week || "",
-            chapter_index: p.chapter_index ?? i,
-            item_index: p.item_index ?? 0,
-            status: (p.status as Page["status"]) || "review",
-            slide: {
-              title: p.slide?.title || p.title || "",
-              subtitle: p.slide?.subtitle || p.subtitle || "",
-              layout: p.slide?.layout || p.layout || "concept",
-              elements: (p.slide?.elements || p.elements || []).map((el: any, ei: number) => ({
+
+          // ── 후처리: bullets 항목 수 제한 + 마커 검증 ──────────────
+          const sanitizePage = (p: any, i: number): Page => {
+            const rawElements: any[] = p.slide?.elements || p.elements || []
+
+            // 1. bullets/circles 항목 수 제한 (bullets: 최대 3개, circles: 최대 4개)
+            const elements = rawElements.map((el: any, ei: number) => {
+              let items = el.items || []
+              if (el.type === "bullets" && items.length > 3) items = items.slice(0, 3)
+              if (el.type === "circles" && items.length > 4) items = items.slice(0, 4)
+              return {
                 id: el.id || `el-${ei + 1}`,
                 order: el.order ?? ei + 1,
                 type: el.type || "heading",
                 text: el.text || el.content || "",
-                items: el.items || [],
-              })),
-            },
-            section_name: p.section_name || "",
-            screen_desc: p.screen_desc || "",
-            narration: p.narration || "",
-          }));
+                items,
+              }
+            })
+
+            // 2. 나레이션 마커 수 검증 — elements 수만큼만 허용
+            let narration: string = p.narration || ""
+            const markerMatches = narration.match(/#\d+/g) || []
+            const expectedMarkers = elements.length
+            // 마커가 너무 많으면 초과분 제거
+            if (markerMatches.length > expectedMarkers) {
+              let count = 0
+              narration = narration.replace(/#\d+/g, (m) => {
+                count++
+                return count <= expectedMarkers ? m : ""
+              }).replace(/\s{2,}/g, " ").trim()
+            }
+
+            return {
+              id: i + 1,
+              page_id: p.page_id || `${i + 1}`,
+              course: p.course || "",
+              week: p.week || "",
+              chapter_index: p.chapter_index ?? i,
+              item_index: p.item_index ?? 0,
+              status: (p.status as Page["status"]) || "review",
+              slide: {
+                title: p.slide?.title || p.title || "",
+                subtitle: p.slide?.subtitle || p.subtitle || "",
+                layout: p.slide?.layout || p.layout || "concept",
+                elements,
+              },
+              section_name: p.section_name || "",
+              screen_desc: p.screen_desc || "",
+              narration,
+            }
+          }
+
+          const pages: Page[] = data.result.pages.map(sanitizePage)
           setTimeout(() => onDone(
             pages,
             data.result.index || [],
