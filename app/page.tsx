@@ -685,39 +685,42 @@ function SlideView({
       {/* ── 바디: INDEX | 미리보기 | 화면설명 ── */}
       <div className="flex shrink-0" style={{ height: previewH }}>
 
-        {/* INDEX */}
+        {/* INDEX — 섹션 제목만 표시, 현재 섹션 강조 */}
         <div className="border-r border-slate-200 shrink-0 overflow-y-auto bg-slate-50/60"
           style={{ width: indexWidth }}>
           {indexStructure.length === 0 ? (
             <div className="h-full flex items-center justify-center">
               <span className="text-slate-300" style={{ fontSize: UI_SM }}>목차 없음</span>
             </div>
-          ) : indexStructure.map((ch, ci) => (
-            <div key={ci}>
-              {/* 섹션명 헤더: 섹션명만 표시 */}
-              <div className="bg-slate-700 text-white font-semibold flex items-center"
-                style={{ fontSize: UI_SM, padding: "5px 8px" }}>
-                <span className="truncate">{ch.chapter}</span>
+          ) : indexStructure.map((ch, ci) => {
+            const isActiveSection = ci === page.chapter_index;
+            return (
+              <div key={ci}
+                className={cn(
+                  "flex items-center justify-between transition-colors border-l-2",
+                  isActiveSection
+                    ? "bg-slate-800 text-white border-red-500"
+                    : "bg-slate-700 text-slate-300 border-transparent hover:bg-slate-600"
+                )}
+                style={{ fontSize: UI_SM, padding: "6px 8px" }}>
+                <div className="flex items-center gap-1.5 min-w-0">
+                  {/* 섹션 번호 */}
+                  <span className={cn(
+                    "shrink-0 font-bold rounded px-1",
+                    isActiveSection ? "bg-red-500 text-white" : "text-slate-400"
+                  )} style={{ fontSize: "9px" }}>{ci + 1}</span>
+                  <span className="truncate font-semibold">{ch.chapter}</span>
+                </div>
+                {/* 현재 섹션이면 현재 페이지 위치 표시 */}
+                {isActiveSection && (
+                  <span className="shrink-0 text-red-400 font-bold ml-1"
+                    style={{ fontSize: "9px" }}>
+                    p.{page.item_index + 1}
+                  </span>
+                )}
               </div>
-              {/* 소주제 목록 */}
-              {ch.items.map((item, ii) => {
-                const active = ci === page.chapter_index && ii === page.item_index;
-                return (
-                  <div key={ii}
-                    className={cn(
-                      "flex items-start gap-1.5 transition-colors",
-                      active
-                        ? "bg-red-50 text-slate-800 font-bold border-l-2 border-red-500"
-                        : "text-slate-400 border-l-2 border-transparent hover:text-slate-600"
-                    )}
-                    style={{ fontSize: UI_BASE, padding: "4px 8px" }}>
-                    <span className="shrink-0 text-slate-300 mt-0.5" style={{ fontSize: "9px" }}>▸</span>
-                    <span className="leading-snug">{item}</span>
-                  </div>
-                );
-              })}
-            </div>
-          ))}
+            );
+          })}
         </div>
 
         {/* 미리보기 (히어로 콘텐츠) */}
