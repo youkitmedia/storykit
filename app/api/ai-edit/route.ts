@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
-import pdfParse from "pdf-parse";
+// Turbopack/ESM 호환: require 방식으로 import
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+const pdfParse = require("pdf-parse") as (buffer: Buffer) => Promise<{ text: string }>
 
 export async function POST(req: NextRequest) {
   try {
