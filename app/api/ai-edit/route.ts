@@ -258,8 +258,8 @@ JSON만 출력하세요. { 로 시작해서 } 로 끝내세요.`;
         "anthropic-version": "2023-06-01",
       },
       body: JSON.stringify({
-        model: "claude-sonnet-4-5",
-        max_tokens: isGenerateMode ? 6000 : 1500,
+        model: "claude-sonnet-4-20250514",
+        max_tokens: isGenerateMode ? 16000 : 2000,
         system: isGenerateMode ? generatePrompt : editPrompt,
         messages: [
           { role: "user", content: userContent },
