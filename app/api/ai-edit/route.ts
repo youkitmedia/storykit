@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 
+export const maxDuration = 300; // Vercel 최대 5분
+
 export async function POST(req: NextRequest) {
   try {
     const { message, slideContext, pdfText } = await req.json();
@@ -320,7 +322,7 @@ JSON만 출력하세요. { 로 시작해서 } 로 끝내세요.`;
 }`;
 
     const userContent = isGenerateMode
-      ? `다음 강의 원고를 분석하여 스토리보드를 생성하세요.\n\n원고:\n${extractedText.substring(0, 8000)}`
+      ? `다음 강의 원고를 분석하여 스토리보드를 생성하세요.\n\n원고:\n${extractedText.substring(0, 12000)}`
       : message;
 
     const assistantPrefill = isGenerateMode ? `{"course":"` : `{"summary":"`;
@@ -334,7 +336,7 @@ JSON만 출력하세요. { 로 시작해서 } 로 끝내세요.`;
       },
       body: JSON.stringify({
         model: "claude-sonnet-4-20250514",
-        max_tokens: isGenerateMode ? 16000 : 2000,
+        max_tokens: isGenerateMode ? 32000 : 2000,
         system: isGenerateMode ? generatePrompt : editPrompt,
         messages: [
           { role: "user", content: userContent },
