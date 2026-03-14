@@ -685,8 +685,8 @@ function SlideView({
       {/* ── 바디: INDEX | 미리보기 | 화면설명 ── */}
       <div className="flex shrink-0" style={{ height: previewH }}>
 
-        {/* INDEX — 섹션 제목만 표시, 현재 섹션 강조 */}
-        <div className="border-r border-slate-200 shrink-0 overflow-y-auto bg-slate-50/60"
+        {/* INDEX — 섹션 제목만, 배경색 없이 텍스트, 현재 섹션 옅은 레드 강조 */}
+        <div className="border-r border-slate-200 shrink-0 overflow-y-auto bg-white"
           style={{ width: indexWidth }}>
           {indexStructure.length === 0 ? (
             <div className="h-full flex items-center justify-center">
@@ -697,25 +697,28 @@ function SlideView({
             return (
               <div key={ci}
                 className={cn(
-                  "flex items-center justify-between transition-colors border-l-2",
+                  "flex items-center justify-between transition-colors border-l-2 border-b border-slate-100",
                   isActiveSection
-                    ? "bg-slate-800 text-white border-red-500"
-                    : "bg-slate-700 text-slate-300 border-transparent hover:bg-slate-600"
+                    ? "bg-red-50 border-l-red-400"
+                    : "border-l-transparent hover:bg-slate-50"
                 )}
-                style={{ fontSize: UI_SM, padding: "6px 8px" }}>
+                style={{ padding: "6px 8px" }}>
                 <div className="flex items-center gap-1.5 min-w-0">
-                  {/* 섹션 번호 */}
                   <span className={cn(
-                    "shrink-0 font-bold rounded px-1",
-                    isActiveSection ? "bg-red-500 text-white" : "text-slate-400"
+                    "shrink-0 font-bold",
+                    isActiveSection ? "text-red-400" : "text-slate-300"
                   )} style={{ fontSize: "9px" }}>{ci + 1}</span>
-                  <span className="truncate font-semibold">{ch.chapter}</span>
+                  <span className={cn(
+                    "truncate",
+                    isActiveSection
+                      ? "text-slate-800 font-semibold"
+                      : "text-slate-500 font-normal"
+                  )} style={{ fontSize: UI_SM }}>{ch.chapter}</span>
                 </div>
-                {/* 현재 섹션이면 현재 페이지 위치 표시 */}
                 {isActiveSection && (
                   <span className="shrink-0 text-red-400 font-bold ml-1"
                     style={{ fontSize: "9px" }}>
-                    p.{page.item_index + 1}
+                    {page.item_index + 1}/{ch.items.length}
                   </span>
                 )}
               </div>
