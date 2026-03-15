@@ -1,5 +1,6 @@
 "use client";
 
+import React from "react";
 import { useState, useRef, useEffect, useCallback } from "react";
 import {
   Upload, Check, Download, ChevronLeft, ChevronRight,
@@ -21,7 +22,8 @@ interface StatusConfig {
 }
 interface SlideElement {
   id: string; order: number;
-  type: "heading" | "circles" | "bullets" | "emphasis" | "question" | "subtitle_text";
+  type: "heading" | "circles" | "bullets" | "emphasis" | "question" | "subtitle_text" | "infographic";
+  subtype?: "icons" | "icon_grid" | "flow" | "diagram" | "chart" | "bar";
   text?: string; items?: string[];
 }
 interface Slide {
@@ -280,10 +282,12 @@ function GeneratingScreen({
               let items = el.items || []
               if (el.type === "bullets" && items.length > 3) items = items.slice(0, 3)
               if (el.type === "circles" && items.length > 4) items = items.slice(0, 4)
+              if (el.type === "infographic" && items.length > 5) items = items.slice(0, 5)
               return {
                 id: el.id || `el-${ei + 1}`,
                 order: el.order ?? ei + 1,
                 type: el.type || "heading",
+                subtype: el.subtype || undefined,
                 text: el.text || el.content || "",
                 items,
               }
@@ -439,7 +443,7 @@ function SlideHeroContent({ page, scale }: { page: Page; scale: number }) {
   // 레거시 호환 (padding/spacing용으로만 유지)
   const fs = (n: number) => `${Math.round(n * scale)}px`;
 
-  // 순번 카운터 (heading은 카운트 안함)
+  // 순번 카운터 — element 단위로만 증가 (items 개수 무관)
   let markerIdx = 0;
   const getMarker = () => { markerIdx++; return markerIdx; };
 
@@ -508,7 +512,7 @@ function SlideHeroContent({ page, scale }: { page: Page; scale: number }) {
         </div>
       )}
 
-      {/* ── 강사 우측: 좌측에 콘텐츠 배치 (히어로 섹션 스타일) ── */}
+      {/* ── 강사 우측: 좌측에 콘텐츠 배치 ── */}
       {instructorRight && (
         <div className="absolute inset-0 z-20 flex flex-col justify-center" style={{ paddingTop: fs(28), paddingLeft: fs(20), paddingRight: `calc(38% + ${fs(12)})`, paddingBottom: fs(12) }}>
           {/* 슬라이드 제목 */}
@@ -523,35 +527,40 @@ function SlideHeroContent({ page, scale }: { page: Page; scale: number }) {
             if (el.type === "heading") return null;
 
             if (el.type === "bullets") {
+              // ★ bullets 전체에 마커 1개 — items 각각에 붙이지 않음
+              const m = getMarker();
               return (
                 <div key={i} className="flex flex-col" style={{ gap: fs(5) }}>
-                  {(el.items || []).map((item, idx) => {
-                    const m = getMarker();
-                    return (
-                      <div key={idx} className="flex items-center gap-2 bg-slate-50 rounded-xl border border-slate-100" style={{ padding: `${fs(6)} ${fs(10)}` }}>
-                        <span className="shrink-0 bg-red-500 text-white font-black rounded flex items-center justify-center" style={{ fontSize: sf(14, 10), padding: `${fs(2)} ${fs(4)}`, minWidth: fs(20), height: fs(18) }}>#{m}</span>
-                        <p className="font-semibold text-slate-700 leading-snug" style={{ fontSize: sf(26, 16) }}>{item}</p>
-                      </div>
-                    );
-                  })}
+                  {(el.items || []).map((item, idx) => (
+                    <div key={idx} className="flex items-center gap-2 bg-slate-50 rounded-xl border border-slate-100" style={{ padding: `${fs(6)} ${fs(10)}` }}>
+                      {/* 첫 번째 항목에만 마커, 나머지는 순번 원 */}
+                      {idx === 0
+                        ? <span className="shrink-0 bg-red-500 text-white font-black rounded flex items-center justify-center" style={{ fontSize: sf(14, 10), padding: `${fs(2)} ${fs(4)}`, minWidth: fs(20), height: fs(18) }}>#{m}</span>
+                        : <span className="shrink-0 bg-slate-200 text-slate-600 font-black rounded-full flex items-center justify-center" style={{ fontSize: sf(14, 10), minWidth: fs(20), height: fs(18) }}>{idx + 1}</span>
+                      }
+                      <p className="font-semibold text-slate-700 leading-snug" style={{ fontSize: sf(26, 16) }}>{item}</p>
+                    </div>
+                  ))}
                 </div>
               );
             }
 
             if (el.type === "circles") {
+              // ★ circles 전체에 마커 1개
+              const m = getMarker();
               return (
                 <div key={i} className="flex flex-row" style={{ gap: fs(8) }}>
-                  {(el.items || []).map((item, idx) => {
-                    const m = getMarker();
-                    return (
-                      <div key={idx} className="flex-1 flex flex-col items-center" style={{ gap: fs(4) }}>
-                        <div className="relative rounded-full border-2 border-blue-200 bg-blue-50 flex items-center justify-center" style={{ width: fs(70), height: fs(70) }}>
-                          <p className="font-black text-blue-700 text-center leading-tight" style={{ fontSize: sf(22, 13) }}>{item}</p>
+                  {(el.items || []).map((item, idx) => (
+                    <div key={idx} className="flex-1 flex flex-col items-center" style={{ gap: fs(4) }}>
+                      <div className="relative rounded-full border-2 border-blue-200 bg-blue-50 flex items-center justify-center" style={{ width: fs(70), height: fs(70) }}>
+                        <p className="font-black text-blue-700 text-center leading-tight" style={{ fontSize: sf(22, 13) }}>{item}</p>
+                        {/* 첫 번째 원에만 마커 */}
+                        {idx === 0 && (
                           <span className="absolute -top-1.5 -left-1.5 bg-red-500 text-white font-black rounded flex items-center justify-center" style={{ fontSize: sf(13, 9), padding: `${fs(1)} ${fs(3)}`, minWidth: fs(16), height: fs(14) }}>#{m}</span>
-                        </div>
+                        )}
                       </div>
-                    );
-                  })}
+                    </div>
+                  ))}
                 </div>
               );
             }
@@ -579,6 +588,103 @@ function SlideHeroContent({ page, scale }: { page: Page; scale: number }) {
             if (el.type === "subtitle_text") {
               return (
                 <p key={i} className="text-slate-500 font-medium leading-relaxed" style={{ fontSize: sf(18, 13), marginTop: fs(4) }}>{el.text}</p>
+              );
+            }
+
+            // ★ infographic element — SVG 인라인 렌더링
+            if (el.type === "infographic") {
+              const m = getMarker();
+              const subtype = (el as any).subtype || "icons";
+              const items = el.items || [];
+              const colors = ["#3b82f6","#10b981","#f59e0b","#ef4444","#8b5cf6","#06b6d4"];
+
+              // 아이콘 그리드형
+              if (subtype === "icons" || subtype === "icon_grid") {
+                return (
+                  <div key={i} style={{ marginTop: fs(8) }}>
+                    <div className="flex items-center gap-1.5 mb-2">
+                      <span className="bg-red-500 text-white font-black rounded" style={{ fontSize: sf(14,10), padding:`${fs(2)} ${fs(4)}` }}>#{m}</span>
+                      {el.text && <span className="font-bold text-slate-600" style={{ fontSize: sf(20,13) }}>{el.text}</span>}
+                    </div>
+                    <div className="flex flex-row" style={{ gap: fs(8) }}>
+                      {items.map((item, idx) => (
+                        <div key={idx} className="flex-1 flex flex-col items-center rounded-xl" style={{ padding:`${fs(8)} ${fs(6)}`, background: colors[idx % colors.length] + "18", border:`1.5px solid ${colors[idx % colors.length]}30` }}>
+                          <svg width={fs(32)} height={fs(32)} viewBox="0 0 32 32" fill="none">
+                            <circle cx="16" cy="16" r="14" fill={colors[idx % colors.length]} opacity="0.15"/>
+                            <circle cx="16" cy="16" r="8" fill={colors[idx % colors.length]} opacity="0.7"/>
+                            <text x="16" y="20" textAnchor="middle" fontSize="11" fontWeight="bold" fill={colors[idx % colors.length]}>{idx+1}</text>
+                          </svg>
+                          <p className="font-bold text-center leading-snug mt-1" style={{ fontSize: sf(18,12), color: colors[idx % colors.length] }}>{item}</p>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                );
+              }
+
+              // 단계 흐름형 (화살표 다이어그램)
+              if (subtype === "flow" || subtype === "diagram") {
+                return (
+                  <div key={i} style={{ marginTop: fs(8) }}>
+                    <div className="flex items-center gap-1.5 mb-2">
+                      <span className="bg-red-500 text-white font-black rounded" style={{ fontSize: sf(14,10), padding:`${fs(2)} ${fs(4)}` }}>#{m}</span>
+                      {el.text && <span className="font-bold text-slate-600" style={{ fontSize: sf(20,13) }}>{el.text}</span>}
+                    </div>
+                    <div className="flex flex-row items-center" style={{ gap: fs(4) }}>
+                      {items.map((item, idx) => (
+                        <React.Fragment key={idx}>
+                          <div className="flex flex-col items-center rounded-lg" style={{ padding:`${fs(6)} ${fs(10)}`, background: "#3b82f6", minWidth: fs(60) }}>
+                            <span className="text-white font-black" style={{ fontSize: sf(11,9) }}>STEP {idx+1}</span>
+                            <p className="font-bold text-white text-center leading-tight" style={{ fontSize: sf(18,12) }}>{item}</p>
+                          </div>
+                          {idx < items.length - 1 && (
+                            <svg width={fs(16)} height={fs(16)} viewBox="0 0 16 16" fill="none">
+                              <path d="M2 8h12M10 4l4 4-4 4" stroke="#94a3b8" strokeWidth="2" strokeLinecap="round"/>
+                            </svg>
+                          )}
+                        </React.Fragment>
+                      ))}
+                    </div>
+                  </div>
+                );
+              }
+
+              // 데이터/통계형 (bar chart)
+              if (subtype === "chart" || subtype === "bar") {
+                const nums = items.map(it => { const m2 = it.match(/(\d+)/); return m2 ? parseInt(m2[1]) : 50; });
+                const maxVal = Math.max(...nums, 1);
+                return (
+                  <div key={i} style={{ marginTop: fs(8) }}>
+                    <div className="flex items-center gap-1.5 mb-2">
+                      <span className="bg-red-500 text-white font-black rounded" style={{ fontSize: sf(14,10), padding:`${fs(2)} ${fs(4)}` }}>#{m}</span>
+                      {el.text && <span className="font-bold text-slate-600" style={{ fontSize: sf(20,13) }}>{el.text}</span>}
+                    </div>
+                    <div className="flex flex-row items-end" style={{ gap: fs(6), height: fs(80) }}>
+                      {items.map((item, idx) => (
+                        <div key={idx} className="flex-1 flex flex-col items-center justify-end">
+                          <div className="w-full rounded-t-lg" style={{ height:`${(nums[idx]/maxVal)*100}%`, background: colors[idx % colors.length], minHeight: fs(8) }} />
+                          <p className="font-bold text-center leading-tight mt-1" style={{ fontSize: sf(13,10), color: "#475569" }}>{item}</p>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                );
+              }
+
+              // 기본 fallback — bullets 스타일
+              return (
+                <div key={i} className="flex flex-col" style={{ gap: fs(5), marginTop: fs(6) }}>
+                  <div className="flex items-center gap-1.5">
+                    <span className="bg-red-500 text-white font-black rounded" style={{ fontSize: sf(14,10), padding:`${fs(2)} ${fs(4)}` }}>#{m}</span>
+                    {el.text && <span className="font-bold text-slate-700" style={{ fontSize: sf(22,14) }}>{el.text}</span>}
+                  </div>
+                  {items.map((item, idx) => (
+                    <div key={idx} className="flex items-center gap-2 bg-slate-50 rounded-xl border border-slate-100" style={{ padding:`${fs(5)} ${fs(9)}` }}>
+                      <span className="shrink-0 rounded-full flex items-center justify-center font-bold text-white" style={{ background: colors[idx % colors.length], fontSize: sf(13,10), minWidth: fs(18), height: fs(18) }}>{idx+1}</span>
+                      <p className="font-semibold text-slate-700" style={{ fontSize: sf(22,14) }}>{item}</p>
+                    </div>
+                  ))}
+                </div>
               );
             }
 
