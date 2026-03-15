@@ -250,15 +250,28 @@ function GeneratingScreen({
     if (calledRef.current) return;
     calledRef.current = true;
 
+    // 실제 AI 응답 소요 시간: 평균 30~60초
+    // 구간별 속도 조절: 초반 빠르게 → 중반 중간 → 후반 천천히(실제 대기)
+    // 0~30%: 빠르게 (파싱/준비 단계 - 실제 짧음)
+    // 30~60%: 중간 (AI 분석 중)
+    // 60~92%: 매우 느리게 (AI 생성 중 - 실제 가장 긴 구간)
     let p = 0;
     const iv = setInterval(() => {
-      p += Math.random() * 8 + 2;
-      if (p >= 85) { clearInterval(iv); }
-      setProgress(Math.min(p, 85));
-    }, 200);
+      let increment: number;
+      if (p < 30)       increment = Math.random() * 6 + 4;   // 빠르게
+      else if (p < 60)  increment = Math.random() * 2 + 1;   // 중간
+      else if (p < 85)  increment = Math.random() * 0.6 + 0.2; // 느리게
+      else              increment = Math.random() * 0.15 + 0.05; // 매우 느리게
+      p = Math.min(p + increment, 92);
+      setProgress(p);
+      // 단계별 메시지 업데이트
+      if (p >= 10 && p < 30) setStatusMsg("원고 텍스트 분석 중...");
+      else if (p >= 30 && p < 55) setStatusMsg("섹션 구조 파악 중...");
+      else if (p >= 55 && p < 75) setStatusMsg("AI 스토리보드 설계 중...");
+      else if (p >= 75 && p < 92) setStatusMsg("나레이션·자막 생성 중...");
+    }, 400);
 
     const generate = async () => {
-      setStatusMsg("AI 스토리보드 생성 중...");
       try {
         const res = await fetch("/api/ai-edit", {
           method: "POST",
@@ -268,6 +281,9 @@ function GeneratingScreen({
         const data = await res.json();
 
         clearInterval(iv);
+        setProgress(98);
+        setStatusMsg("스토리보드 검증 중...");
+        await new Promise(r => setTimeout(r, 600));
         setProgress(100);
         setStatusMsg("스토리보드 생성 완료!");
 
@@ -293,12 +309,13 @@ function GeneratingScreen({
               }
             })
 
-            // 2. 나레이션 마커 수 검증 — elements 수만큼만 허용
+            // 2. 나레이션 마커 수 검증 — elements 수보다 많은 경우만 초과분 제거
+            // (마커가 적은 경우는 AI가 의도적으로 줄인 것이므로 건드리지 않음)
             let narration: string = p.narration || ""
             const markerMatches = narration.match(/#\d+/g) || []
             const expectedMarkers = elements.length
-            // 마커가 너무 많으면 초과분 제거
-            if (markerMatches.length > expectedMarkers) {
+            if (markerMatches.length > expectedMarkers + 1) {
+              // elements보다 2개 이상 많을 때만 초과분 제거 (1개 여유 허용)
               let count = 0
               narration = narration.replace(/#\d+/g, (m) => {
                 count++
@@ -347,11 +364,11 @@ function GeneratingScreen({
   }, []);
 
   const steps = [
-    { msg: "PDF 텍스트 파싱 완료", threshold: 15 },
-    { msg: "페이지 단위 구조 분석 중", threshold: 35 },
-    { msg: "슬라이드 레이아웃 구성 중", threshold: 55 },
-    { msg: "나레이션·자막 매핑 완료", threshold: 75 },
-    { msg: "스토리보드 최종 생성 완료", threshold: 95 },
+    { msg: "원고 텍스트 파싱 완료",       threshold: 10 },
+    { msg: "섹션 구조 파악 중",           threshold: 30 },
+    { msg: "AI 스토리보드 설계 중",       threshold: 55 },
+    { msg: "나레이션·자막 생성 중",       threshold: 75 },
+    { msg: "스토리보드 최종 완성",        threshold: 98 },
   ];
 
   return (
