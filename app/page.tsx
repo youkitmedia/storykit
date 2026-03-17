@@ -30,16 +30,16 @@ interface Slide {
   title: string; subtitle: string; layout: string; elements: SlideElement[];
 }
 interface ImageDesc {
-  keywords: string[];   // 추천 검색 키워드
-  description: string;  // 이미지 설명
+  keywords: string[];
+  description: string;
 }
 interface Page {
   id: number; page_id: string; course: string; week: string;
-  section_name?: string;        // 원고 섹션명 (예: "강의 시작멘트")
+  section_name?: string;
   chapter_index: number; item_index: number;
   status: "approved" | "review" | "editing";
   slide: Slide; screen_desc: string; narration: string;
-  image_desc?: ImageDesc; // 화면 설명 (선택)
+  image_desc?: ImageDesc;
 }
 interface IndexChapter { chapter: string; scene_no?: string; items: string[]; }
 
@@ -61,6 +61,63 @@ const HEADER_HEIGHT = 52;
 const SUBBAR_HEIGHT = 38;
 const PAGINATION_HEIGHT = 48;
 
+// ══════════════════════════════════════════════════════
+// ★ SSE 스트리밍 수신 유틸
+// ══════════════════════════════════════════════════════
+async function fetchSSE(
+  url: string,
+  body: unknown,
+  onProgress: (msg: string) => void
+): Promise<unknown> {
+  const res = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+
+  if (!res.ok || !res.body) {
+    throw new Error(`HTTP ${res.status}`);
+  }
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let currentEvent = "";
+  let result: unknown = null;
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split("\n");
+    buffer = lines.pop() ?? "";
+
+    for (const line of lines) {
+      if (line.startsWith("event:")) {
+        currentEvent = line.slice(6).trim();
+      } else if (line.startsWith("data:")) {
+        const raw = line.slice(5).trim();
+        try {
+          const payload = JSON.parse(raw);
+          if (currentEvent === "progress") {
+            onProgress(payload.message ?? "");
+          } else if (currentEvent === "result") {
+            result = payload.data;
+          } else if (currentEvent === "error") {
+            throw new Error(payload.message ?? "Unknown error");
+          }
+        } catch (e) {
+          if (currentEvent === "error") throw e;
+        }
+        currentEvent = "";
+      }
+    }
+  }
+
+  return result;
+}
+
 // ── 업로드 화면 ──────────────────────────────────────
 function UploadScreen({ onNext }: { onNext: (pdfText: string, fileName: string) => void }) {
   const [selectedType, setSelectedType] = useState("elearning");
@@ -79,21 +136,18 @@ function UploadScreen({ onNext }: { onNext: (pdfText: string, fileName: string) 
       const isTxt = file.name.toLowerCase().endsWith(".txt");
 
       if (isPdf && text.startsWith("%PDF")) {
-        // 바이너리 PDF (이미지 기반): 텍스트 추출 불가
         setPdfText("");
         alert("이 PDF에서 텍스트를 추출할 수 없습니다.\n원고 작성 도구에서 TXT 파일로 내보내기 후 업로드해주세요.");
       } else if (isPdf && (text.includes("<!DOCTYPE") || text.includes("<html") || text.includes("<style"))) {
-        // window.print() 방식으로 만든 HTML 기반 PDF → HTML 태그 제거 후 순수 텍스트만 추출
         const clean = text
-          .replace(/<style[\s\S]*?<\/style>/gi, "")   // style 블록 제거
-          .replace(/<script[\s\S]*?<\/script>/gi, "") // script 블록 제거
-          .replace(/<[^>]+>/g, " ")                   // 나머지 태그 제거
+          .replace(/<style[\s\S]*?<\/style>/gi, "")
+          .replace(/<script[\s\S]*?<\/script>/gi, "")
+          .replace(/<[^>]+>/g, " ")
           .replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&nbsp;/g, " ")
-          .replace(/\s{2,}/g, "\n")                   // 연속 공백 → 줄바꿈
+          .replace(/\s{2,}/g, "\n")
           .trim();
         setPdfText(clean);
       } else if (isTxt) {
-        // TXT 파일: 그대로 사용
         setPdfText(text);
       } else {
         setPdfText(text);
@@ -234,7 +288,9 @@ function UploadScreen({ onNext }: { onNext: (pdfText: string, fileName: string) 
   );
 }
 
-// ── 생성 중 화면 ─────────────────────────────────────
+// ══════════════════════════════════════════════════════
+// ── 생성 중 화면 ★ SSE 스트리밍 적용
+// ══════════════════════════════════════════════════════
 function GeneratingScreen({
   onDone, pdfText, fileName
 }: {
@@ -250,38 +306,26 @@ function GeneratingScreen({
     if (calledRef.current) return;
     calledRef.current = true;
 
-    // 실제 AI 응답 소요 시간: 평균 30~60초
-    // 구간별 속도 조절: 초반 빠르게 → 중반 중간 → 후반 천천히(실제 대기)
-    // 0~30%: 빠르게 (파싱/준비 단계 - 실제 짧음)
-    // 30~60%: 중간 (AI 분석 중)
-    // 60~92%: 매우 느리게 (AI 생성 중 - 실제 가장 긴 구간)
+    // 프로그레스바: SSE progress 이벤트로 메시지 수신 + 가짜 진행
     let p = 0;
     const iv = setInterval(() => {
       let increment: number;
-      if (p < 30)       increment = Math.random() * 6 + 4;   // 빠르게
-      else if (p < 60)  increment = Math.random() * 2 + 1;   // 중간
-      else if (p < 85)  increment = Math.random() * 0.6 + 0.2; // 느리게
-      else              increment = Math.random() * 0.15 + 0.05; // 매우 느리게
+      if (p < 30)      increment = Math.random() * 4 + 2;
+      else if (p < 60) increment = Math.random() * 1.5 + 0.5;
+      else if (p < 85) increment = Math.random() * 0.4 + 0.1;
+      else             increment = Math.random() * 0.1 + 0.02;
       p = Math.min(p + increment, 92);
       setProgress(p);
-      // 단계별 메시지 업데이트
-      if (p >= 10 && p < 30) setStatusMsg("원고 텍스트 분석 중...");
-      else if (p >= 30 && p < 55) setStatusMsg("섹션 구조 파악 중...");
-      else if (p >= 55 && p < 75) setStatusMsg("AI 스토리보드 설계 중...");
-      else if (p >= 75 && p < 92) setStatusMsg("나레이션·자막 생성 중...");
     }, 400);
 
     const generate = async () => {
       try {
-        const res = await fetch("/api/ai-edit", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            pdfText: pdfText || "",
-            fileName,
-          }),
-      });
-const data = await res.json();
+        // ★ SSE 스트리밍으로 호출 — 타임아웃 없이 진행 상황 실시간 수신
+        const data = await fetchSSE(
+          "/api/ai-edit",
+          { mode: "generate", pdfText: pdfText || "", fileName },
+          (msg) => setStatusMsg(msg) // progress 이벤트 → 상태 메시지 업데이트
+        );
 
         clearInterval(iv);
         setProgress(98);
@@ -290,18 +334,16 @@ const data = await res.json();
         setProgress(100);
         setStatusMsg("스토리보드 생성 완료!");
 
-        if (data.result?.pages) {
+        const result = data as any;
 
-          // ── 후처리: bullets 항목 수 제한 + 마커 검증 ──────────────
+        if (result?.pages) {
           const sanitizePage = (p: any, i: number): Page => {
-            const rawElements: any[] = p.slide?.elements || p.elements || []
-
-            // 1. bullets/circles 항목 수 제한 (bullets: 최대 3개, circles: 최대 4개)
+            const rawElements: any[] = p.slide?.elements || p.elements || [];
             const elements = rawElements.map((el: any, ei: number) => {
-              let items = el.items || []
-              if (el.type === "bullets" && items.length > 3) items = items.slice(0, 3)
-              if (el.type === "circles" && items.length > 4) items = items.slice(0, 4)
-              if (el.type === "infographic" && items.length > 5) items = items.slice(0, 5)
+              let items = el.items || [];
+              if (el.type === "bullets" && items.length > 3) items = items.slice(0, 3);
+              if (el.type === "circles" && items.length > 4) items = items.slice(0, 4);
+              if (el.type === "infographic" && items.length > 5) items = items.slice(0, 5);
               return {
                 id: el.id || `el-${ei + 1}`,
                 order: el.order ?? ei + 1,
@@ -309,21 +351,17 @@ const data = await res.json();
                 subtype: el.subtype || undefined,
                 text: el.text || el.content || "",
                 items,
-              }
-            })
+              };
+            });
 
-            // 2. 나레이션 마커 수 검증 — elements 수보다 많은 경우만 초과분 제거
-            // (마커가 적은 경우는 AI가 의도적으로 줄인 것이므로 건드리지 않음)
-            let narration: string = p.narration || ""
-            const markerMatches = narration.match(/#\d+/g) || []
-            const expectedMarkers = elements.length
-            if (markerMatches.length > expectedMarkers + 1) {
-              // elements보다 2개 이상 많을 때만 초과분 제거 (1개 여유 허용)
-              let count = 0
+            let narration: string = p.narration || "";
+            const markerMatches = narration.match(/#\d+/g) || [];
+            if (markerMatches.length > elements.length + 1) {
+              let count = 0;
               narration = narration.replace(/#\d+/g, (m) => {
-                count++
-                return count <= expectedMarkers ? m : ""
-              }).replace(/\s{2,}/g, " ").trim()
+                count++;
+                return count <= elements.length ? m : "";
+              }).replace(/\s{2,}/g, " ").trim();
             }
 
             return {
@@ -343,14 +381,14 @@ const data = await res.json();
               section_name: p.section_name || "",
               screen_desc: p.screen_desc || "",
               narration,
-            }
-          }
+            };
+          };
 
-          const pages: Page[] = data.result.pages.map(sanitizePage)
+          const pages: Page[] = result.pages.map(sanitizePage);
           setTimeout(() => onDone(
             pages,
-            data.result.index || [],
-            data.result.course_title || "AI 생성 스토리보드"
+            result.index || [],
+            result.course_title || "AI 생성 스토리보드"
           ), 500);
         } else {
           setTimeout(() => onDone([createEmptyPage(1)], [], fileName), 500);
@@ -367,11 +405,11 @@ const data = await res.json();
   }, []);
 
   const steps = [
-    { msg: "원고 텍스트 파싱 완료",       threshold: 10 },
-    { msg: "섹션 구조 파악 중",           threshold: 30 },
-    { msg: "AI 스토리보드 설계 중",       threshold: 55 },
-    { msg: "나레이션·자막 생성 중",       threshold: 75 },
-    { msg: "스토리보드 최종 완성",        threshold: 98 },
+    { msg: "원고 텍스트 파싱 완료",   threshold: 10 },
+    { msg: "섹션 구조 파악 중",       threshold: 30 },
+    { msg: "AI 스토리보드 설계 중",   threshold: 55 },
+    { msg: "나레이션·자막 생성 중",   threshold: 75 },
+    { msg: "스토리보드 최종 완성",    threshold: 98 },
   ];
 
   return (
@@ -435,45 +473,32 @@ function NarrationText({ text }: { text: string }) {
   );
 }
 
-// ── UI 고정 폰트 상수 (모든 컴포넌트에서 공유) ────────────
-const UI_XS   = "11px";   // 상태 배지, 버튼
-const UI_SM   = "12px";   // 패널 라벨, caption
-const UI_BASE = "13px";   // INDEX 텍스트, 헤더 값
-const UI_MD   = "14px";   // 헤더 과정명/주차명 값
-const UI_NAR  = "16px";   // 나레이션 본문 (바디 최소 기준)
+// ── UI 고정 폰트 상수 ────────────────────────────────
+const UI_XS   = "11px";
+const UI_SM   = "12px";
+const UI_BASE = "13px";
+const UI_MD   = "14px";
+const UI_NAR  = "16px";
 
 // ── 슬라이드 콘텐츠 히어로 렌더러 ───────────────────────
 function SlideHeroContent({ page, scale }: { page: Page; scale: number }) {
   const elements = page.slide.elements || [];
   const hasBulletsOrCircles = elements.some(el => el.type === "bullets" || el.type === "circles");
   const instructorRight = hasBulletsOrCircles;
-  // 좌상단 소제목: index items[item_index] 우선, fallback으로 slide.subtitle
-  const chapterLabel = (() => {
-    // SlideView에서 indexStructure를 prop으로 받지 않으므로
-    // slide.subtitle에 소제목을 저장하는 현재 방식 유지하되
-    // page.slide.subtitle이 없으면 빈 문자열
-    return page.slide.subtitle || "";
-  })();
+  const chapterLabel = page.slide.subtitle || "";
 
-  // ── 슬라이드 타이포그래피 (웹디자이너 기준) ──────────────
-  // sf(base, min): 화면 크기에 따라 비례하되 최소값 보장
-  // base는 1080px 기준 픽셀값, scale = previewWidth/960
   const sf = (base: number, min: number) =>
     `${Math.round(Math.max(min, base * scale))}px`;
-  // 레거시 호환 (padding/spacing용으로만 유지)
   const fs = (n: number) => `${Math.round(n * scale)}px`;
 
-  // 순번 카운터 — element 단위로만 증가 (items 개수 무관)
   let markerIdx = 0;
   const getMarker = () => { markerIdx++; return markerIdx; };
 
   return (
     <div className="relative w-full h-full overflow-hidden bg-white select-none"
       style={{ fontFamily: "'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif" }}>
-      {/* 배경 */}
       <div className="absolute inset-0 bg-gradient-to-br from-slate-50 via-white to-blue-50/20 pointer-events-none" />
 
-      {/* 챕터명 좌상단 */}
       {chapterLabel && (
         <div className="absolute top-0 left-0 z-20 flex items-center gap-1.5 px-3 py-2">
           <div className="w-1 h-3.5 bg-red-500 rounded-full shrink-0" />
@@ -481,13 +506,11 @@ function SlideHeroContent({ page, scale }: { page: Page; scale: number }) {
         </div>
       )}
 
-      {/* 강사 실루엣 */}
       <div className={cn("absolute bottom-0 z-10 text-slate-200",
         instructorRight ? "right-0 w-[36%] h-[94%]" : "left-1/2 -translate-x-1/2 w-[30%] h-[90%]")}>
         <InstructorSilhouette className="w-full h-full" />
       </div>
 
-      {/* ── 강사 중앙: 자막 하단 배치 ── */}
       {!instructorRight && (
         <div className="absolute inset-0 z-20 flex flex-col justify-end" style={{ paddingBottom: fs(20), paddingLeft: fs(24), paddingRight: fs(24) }}>
           {elements.map((el, i) => {
@@ -532,10 +555,8 @@ function SlideHeroContent({ page, scale }: { page: Page; scale: number }) {
         </div>
       )}
 
-      {/* ── 강사 우측: 좌측에 콘텐츠 배치 ── */}
       {instructorRight && (
         <div className="absolute inset-0 z-20 flex flex-col justify-center" style={{ paddingTop: fs(28), paddingLeft: fs(20), paddingRight: `calc(38% + ${fs(12)})`, paddingBottom: fs(12) }}>
-          {/* 슬라이드 제목 */}
           {page.slide.title && (
             <div style={{ marginBottom: "12px" }}>
               <h2 className="font-black text-slate-800 leading-tight" style={{ fontSize: sf(40, 22) }}>{page.slide.title}</h2>
@@ -547,13 +568,11 @@ function SlideHeroContent({ page, scale }: { page: Page; scale: number }) {
             if (el.type === "heading") return null;
 
             if (el.type === "bullets") {
-              // ★ bullets 전체에 마커 1개 — items 각각에 붙이지 않음
               const m = getMarker();
               return (
                 <div key={i} className="flex flex-col" style={{ gap: fs(5) }}>
                   {(el.items || []).map((item, idx) => (
                     <div key={idx} className="flex items-center gap-2 bg-slate-50 rounded-xl border border-slate-100" style={{ padding: `${fs(6)} ${fs(10)}` }}>
-                      {/* 첫 번째 항목에만 마커, 나머지는 순번 원 */}
                       {idx === 0
                         ? <span className="shrink-0 bg-red-500 text-white font-black rounded flex items-center justify-center" style={{ fontSize: sf(14, 10), padding: `${fs(2)} ${fs(4)}`, minWidth: fs(20), height: fs(18) }}>#{m}</span>
                         : <span className="shrink-0 bg-slate-200 text-slate-600 font-black rounded-full flex items-center justify-center" style={{ fontSize: sf(14, 10), minWidth: fs(20), height: fs(18) }}>{idx + 1}</span>
@@ -566,7 +585,6 @@ function SlideHeroContent({ page, scale }: { page: Page; scale: number }) {
             }
 
             if (el.type === "circles") {
-              // ★ circles 전체에 마커 1개
               const m = getMarker();
               return (
                 <div key={i} className="flex flex-row" style={{ gap: fs(8) }}>
@@ -574,7 +592,6 @@ function SlideHeroContent({ page, scale }: { page: Page; scale: number }) {
                     <div key={idx} className="flex-1 flex flex-col items-center" style={{ gap: fs(4) }}>
                       <div className="relative rounded-full border-2 border-blue-200 bg-blue-50 flex items-center justify-center" style={{ width: fs(70), height: fs(70) }}>
                         <p className="font-black text-blue-700 text-center leading-tight" style={{ fontSize: sf(22, 13) }}>{item}</p>
-                        {/* 첫 번째 원에만 마커 */}
                         {idx === 0 && (
                           <span className="absolute -top-1.5 -left-1.5 bg-red-500 text-white font-black rounded flex items-center justify-center" style={{ fontSize: sf(13, 9), padding: `${fs(1)} ${fs(3)}`, minWidth: fs(16), height: fs(14) }}>#{m}</span>
                         )}
@@ -611,14 +628,12 @@ function SlideHeroContent({ page, scale }: { page: Page; scale: number }) {
               );
             }
 
-            // ★ infographic element — SVG 인라인 렌더링
             if (el.type === "infographic") {
               const m = getMarker();
               const subtype = (el as any).subtype || "icons";
               const items = el.items || [];
               const colors = ["#3b82f6","#10b981","#f59e0b","#ef4444","#8b5cf6","#06b6d4"];
 
-              // 아이콘 그리드형
               if (subtype === "icons" || subtype === "icon_grid") {
                 return (
                   <div key={i} style={{ marginTop: fs(8) }}>
@@ -642,7 +657,6 @@ function SlideHeroContent({ page, scale }: { page: Page; scale: number }) {
                 );
               }
 
-              // 단계 흐름형 (화살표 다이어그램)
               if (subtype === "flow" || subtype === "diagram") {
                 return (
                   <div key={i} style={{ marginTop: fs(8) }}>
@@ -669,7 +683,6 @@ function SlideHeroContent({ page, scale }: { page: Page; scale: number }) {
                 );
               }
 
-              // 데이터/통계형 (bar chart)
               if (subtype === "chart" || subtype === "bar") {
                 const nums = items.map(it => { const m2 = it.match(/(\d+)/); return m2 ? parseInt(m2[1]) : 50; });
                 const maxVal = Math.max(...nums, 1);
@@ -691,7 +704,6 @@ function SlideHeroContent({ page, scale }: { page: Page; scale: number }) {
                 );
               }
 
-              // 기본 fallback — bullets 스타일
               return (
                 <div key={i} className="flex flex-col" style={{ gap: fs(5), marginTop: fs(6) }}>
                   <div className="flex items-center gap-1.5">
@@ -713,7 +725,6 @@ function SlideHeroContent({ page, scale }: { page: Page; scale: number }) {
         </div>
       )}
 
-      {/* 화면 설명 (우하단) */}
       {page.screen_desc && (
         <div className="absolute bottom-2 right-3 z-30">
           <span className="font-bold text-slate-400 bg-white/80 rounded" style={{ fontSize: UI_SM, padding: "3px 8px" }}>{page.screen_desc}</span>
@@ -730,48 +741,25 @@ function SlideView({
   page: Page; onUpdate: (page: Page) => void;
   slideWidth: number; indexStructure: IndexChapter[];
 }) {
-  // ── 레퍼런스 치수 기반 레이아웃 (Image2: 1480px 기준)
-  // INDEX(200px=13.51%) | PREVIEW(1080px=72.97%) | DESC(200px=13.51%)
-  // 높이: 헤더(60px) | 미리보기(600px) | 나레이션(176px)
-  const REF_TOTAL   = 1480;  // 레퍼런스 전체 폭
-  const REF_PREVIEW = 1080;  // 레퍼런스 미리보기 폭
-  const REF_IDX     = 200;   // 레퍼런스 INDEX 폭
-  const REF_DESC    = 200;   // 레퍼런스 DESC 폭
-  const REF_PREV_H  = 600;   // 레퍼런스 미리보기 높이 (16:9 기준)
-  const REF_HDR_H   = 50;    // 헤더 높이 (50px 기준)
-  const REF_NAR_H   = 176;   // 레퍼런스 나레이션 높이
+  const REF_TOTAL   = 1480;
+  const REF_PREVIEW = 1080;
+  const REF_IDX     = 200;
+  const REF_DESC    = 200;
+  const REF_PREV_H  = 600;
+  const REF_HDR_H   = 50;
+  const REF_NAR_H   = 176;
 
-  // slideWidth 기준 scale factor
   const scaleFactor = slideWidth / REF_TOTAL;
-
-  // 각 영역 폭 계산 (min/max 클램프 적용)
   const indexWidth   = Math.round(Math.min(260, Math.max(120, REF_IDX  * scaleFactor)));
   const descWidth    = Math.round(Math.min(260, Math.max(120, REF_DESC * scaleFactor)));
-  const previewWidth = slideWidth - indexWidth - descWidth;  // 나머지 전부
-
-  // scale: previewWidth 기준 (콘텐츠 렌더링용)
-  // ── 타이포그래피 시스템 (웹디자이너 기준) ──────────────────
-  // 슬라이드 콘텐츠(강사화면) scale — 레이아웃 비례용
+  const previewWidth = slideWidth - indexWidth - descWidth;
   const scale = previewWidth / 960;
-  // 레이아웃 높이 전용 scale (레퍼런스 1080 기준)
   const layoutScale = previewWidth / REF_PREVIEW;
-
-  // 슬라이드 내부 텍스트: clamp(min, preferred, max)
-  // preferred = n * (previewWidth / 1080) * 100 + "cqw" 대신 px 계산
-  const slideFont = (base: number, minPx = base * 0.5) =>
-    `${Math.round(Math.max(minPx, base * layoutScale))}px`;
-
-  // UI 상수는 모듈 최상단에 정의됨 (UI_XS ~ UI_NAR)
-
-  // 하위 호환: SlideHeroContent로 전달하는 scale용 fs
   const fs = (n: number) => `${Math.round(n * scale)}px`;
+  const previewH = Math.round(REF_PREV_H * layoutScale);
+  const hdrH     = Math.round(Math.max(32, REF_HDR_H  * layoutScale));
+  const narH     = Math.round(Math.max(80, REF_NAR_H  * layoutScale));
 
-  // 높이 계산 (레퍼런스 비율 그대로 scale)
-  const previewH = Math.round(REF_PREV_H * layoutScale);   // ≈ previewW * 0.5556
-  const hdrH     = Math.round(Math.max(32, REF_HDR_H  * layoutScale));   // min 32px
-  const narH     = Math.round(Math.max(80, REF_NAR_H  * layoutScale));   // min 80px
-
-  // 화면 설명 편집 핸들러
   const updateKeyword = (idx: number, val: string) => {
     const kws = [...(page.image_desc?.keywords || ["", "", ""])];
     kws[idx] = val;
@@ -793,9 +781,7 @@ function SlideView({
     <div className="border border-slate-300 bg-white flex flex-col overflow-hidden rounded-lg shadow-sm"
       style={{ width: slideWidth }}>
 
-      {/* ── 메타 헤더 (전체 폭, 분리 없음) ── */}
       <div className="flex items-stretch border-b shrink-0 bg-white" style={{ height: hdrH, minHeight: 32, borderBottomColor: "#E8E8E8" }}>
-        {/* 과정명 40% */}
         <div className="flex items-stretch border-r" style={{ width: "40%", borderRightColor: "#E8E8E8" }}>
           <div className="font-semibold whitespace-nowrap flex items-center shrink-0"
             style={{ fontSize: UI_SM, padding: "0 10px", background: "#F3F3F3", color: "#1D293D" }}>과정명</div>
@@ -803,7 +789,6 @@ function SlideView({
             <span className="truncate">{page.course || "—"}</span>
           </div>
         </div>
-        {/* 섹션명(대주제) 32% */}
         <div className="flex items-stretch border-r" style={{ width: "32%", borderRightColor: "#E8E8E8" }}>
           <div className="font-semibold whitespace-nowrap flex items-center shrink-0"
             style={{ fontSize: UI_SM, padding: "0 10px", background: "#F3F3F3", color: "#1D293D" }}>섹션</div>
@@ -811,7 +796,6 @@ function SlideView({
             <span className="truncate">{page.section_name || page.week || "—"}</span>
           </div>
         </div>
-        {/* 페이지 — 라벨+번호 */}
         <div className="flex items-stretch border-r" style={{ width: "14%", borderRightColor: "#E8E8E8" }}>
           <div className="font-semibold whitespace-nowrap flex items-center shrink-0"
             style={{ fontSize: UI_SM, padding: "0 10px", background: "#F3F3F3", color: "#1D293D" }}>페이지</div>
@@ -819,7 +803,6 @@ function SlideView({
             <span>{page.page_id || "—"}</span>
           </div>
         </div>
-        {/* 상태 버튼 (분리 없이 우측 정렬) */}
         <div className="flex items-center gap-1.5 flex-1 px-3">
           {Object.entries(STATUS_CONFIG).map(([k, v]) => (
             <button key={k}
@@ -837,10 +820,7 @@ function SlideView({
         </div>
       </div>
 
-      {/* ── 바디: INDEX | 미리보기 | 화면설명 ── */}
       <div className="flex shrink-0" style={{ height: previewH }}>
-
-        {/* INDEX — 섹션 제목만, 배경색 없이 텍스트, 현재 섹션 옅은 레드 강조 */}
         <div className="border-r border-slate-200 shrink-0 overflow-y-auto bg-white"
           style={{ width: indexWidth }}>
           {indexStructure.length === 0 ? (
@@ -881,24 +861,19 @@ function SlideView({
           })}
         </div>
 
-        {/* 미리보기 (히어로 콘텐츠) */}
         <div className="shrink-0 overflow-hidden" style={{ width: previewWidth, height: previewH }}>
           <SlideHeroContent page={page} scale={scale} />
         </div>
 
-        {/* 화면 설명 패널 — AI 이미지 키워드 (항상 표시) */}
         <div className="border-l border-slate-200 shrink-0 flex flex-col overflow-hidden bg-slate-50/30"
           style={{ width: descWidth }}>
           <div className="flex flex-col h-full overflow-y-auto" style={{ padding: "10px 10px" }}>
-
-            {/* 섹션 헤더 */}
             <div className="flex items-center gap-1.5 shrink-0 mb-2">
               <div className="w-1 h-3 bg-slate-400 rounded-full shrink-0" />
               <span className="font-semibold text-slate-500" style={{ fontSize: UI_SM }}>이미지</span>
             </div>
             <div className="w-full border-t border-slate-100 shrink-0 mb-2" />
 
-            {/* 추천 검색 키워드 */}
             <div className="shrink-0 mb-3">
               <div className="text-slate-400 font-medium mb-1.5" style={{ fontSize: "11px" }}>추천 검색 키워드</div>
               {(page.image_desc?.keywords || ["", "", ""]).map((kw, ki) => (
@@ -916,7 +891,6 @@ function SlideView({
               ))}
             </div>
 
-            {/* 이미지 설명 */}
             <div className="flex-1 flex flex-col min-h-0">
               <div className="text-slate-400 font-medium mb-1.5 shrink-0" style={{ fontSize: "11px" }}>이미지 설명</div>
               <textarea
@@ -928,7 +902,6 @@ function SlideView({
               />
             </div>
 
-            {/* 내용 삭제 버튼 */}
             {hasImageDesc && (
               <button
                 onClick={toggleImageDesc}
@@ -941,21 +914,14 @@ function SlideView({
         </div>
       </div>
 
-      {/* ── 나레이션 (전체 폭, 분리 없음) ── */}
       <div className="flex border-t border-slate-200 shrink-0 bg-white" style={{ height: narH }}>
-        {/* 나레이션 라벨 */}
         <div className="bg-slate-800 flex items-center justify-center shrink-0"
           style={{ width: Math.round(32 * scale), height: narH }}>
           <span className="text-white font-bold tracking-widest select-none"
             style={{ fontSize: UI_SM, writingMode: "vertical-rl", letterSpacing: "0.15em" }}>나레이션</span>
         </div>
-        {/* 나레이션 텍스트 — 전체 폭(라벨 제외) */}
         <div className="flex-1 leading-relaxed text-slate-600 overflow-y-auto"
-          style={{
-            fontSize: UI_NAR,
-            padding: "14px 20px",
-            lineHeight: 1.7,
-          }}>
+          style={{ fontSize: UI_NAR, padding: "14px 20px", lineHeight: 1.7 }}>
           <NarrationText text={page.narration} />
         </div>
       </div>
@@ -963,7 +929,9 @@ function SlideView({
   );
 }
 
-// ── AI 패널 ───────────────────────────────────────────
+// ══════════════════════════════════════════════════════
+// ── AI 패널 ★ SSE 스트리밍 적용
+// ══════════════════════════════════════════════════════
 interface AiStep { label: string; status: "pending" | "loading" | "done"; }
 interface AiHistoryItem {
   id: number;
@@ -1005,10 +973,11 @@ function AiPanel({
     setSteps(s => s.map((st, i) => i <= 1 ? { ...st, status: "done" } : { ...st, status: "loading" }));
 
     try {
-      const res = await fetch("/api/ai-edit", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
+      // ★ SSE 스트리밍으로 호출
+      const data = await fetchSSE(
+        "/api/ai-edit",
+        {
+          mode: "edit",
           message: userRequest,
           slideContext: {
             title: currentPage.slide.title,
@@ -1017,17 +986,21 @@ function AiPanel({
             screen_desc: currentPage.screen_desc,
             elements: currentPage.slide.elements,
           },
-        }),
-      });
+        },
+        (msg) => {
+          // progress 메시지를 마지막 loading 스텝에 반영
+          setSteps(s => s.map(st =>
+            st.status === "loading" ? { ...st, label: msg } : st
+          ));
+        }
+      ) as any;
 
-      const data = await res.json();
       setSteps(s => s.map(st => ({ ...st, status: "done" })));
       await new Promise(r => setTimeout(r, 300));
 
-      const summary = data.result?.summary || "수정이 적용되었습니다.";
-      if (data.result?.slide) {
-        // slide 구조 정규화 (AI 응답 필드명 불일치 방어)
-        const rawSlide = data.result.slide;
+      const summary = data?.summary || "수정이 적용되었습니다.";
+      if (data?.slide) {
+        const rawSlide = data.slide;
         const normalizedSlide: Slide = {
           title: rawSlide.title || currentPage.slide.title,
           subtitle: rawSlide.subtitle || currentPage.slide.subtitle,
@@ -1040,10 +1013,9 @@ function AiPanel({
             items: el.items || [],
           })),
         };
-        onApply(normalizedSlide, data.result.narration || currentPage.narration);
-      } else if (data.result?.narration) {
-        // slide 없이 narration만 수정된 경우
-        onApply(currentPage.slide, data.result.narration);
+        onApply(normalizedSlide, data.narration || currentPage.narration);
+      } else if (data?.narration) {
+        onApply(currentPage.slide, data.narration);
       }
 
       const now = new Date();
@@ -1074,7 +1046,6 @@ function AiPanel({
 
   return (
     <div className="bg-card border-r border-border flex flex-col shrink-0 h-full" style={{ width }}>
-      {/* 헤더 */}
       <div className="px-3.5 py-2.5 border-b border-border flex items-center justify-between shrink-0">
         <div className="flex items-center gap-1.5">
           <span className="text-xs text-primary">✦</span>
@@ -1093,7 +1064,6 @@ function AiPanel({
         </div>
       </div>
 
-      {/* 히스토리 영역 (스크롤, 상단) */}
       <div className="flex-1 overflow-y-auto px-3 py-3 flex flex-col gap-2.5 min-h-0">
         {history.length === 0 && !isProcessing && (
           <div className="flex flex-col items-center justify-center h-full gap-2 pb-6">
@@ -1106,13 +1076,11 @@ function AiPanel({
 
         {history.map(item => (
           <div key={item.id} className="flex flex-col gap-1.5">
-            {/* 사용자 말풍선 (우측) */}
             <div className="flex justify-end">
               <div className="bg-slate-800 text-white rounded-2xl rounded-tr-sm px-3 py-2 max-w-[86%] shadow-sm">
                 <p className="text-[11px] leading-relaxed">{item.request}</p>
               </div>
             </div>
-            {/* AI 응답 말풍선 (좌측) */}
             <div className="flex justify-start items-start gap-1.5">
               <div className="w-5 h-5 rounded-full bg-primary/10 flex items-center justify-center shrink-0 mt-0.5">
                 <span className="text-[8px] font-black text-primary">AI</span>
@@ -1152,7 +1120,6 @@ function AiPanel({
         <div ref={bottomRef} />
       </div>
 
-      {/* 입력 영역 (하단 고정) */}
       <div className="shrink-0 border-t border-border bg-card" style={{ padding: "12px 12px 18px" }}>
         <div className="flex gap-2 items-end">
           <Textarea value={input} onChange={e => setInput(e.target.value)}
@@ -1197,20 +1164,10 @@ function EditorScreen({
       if (!slideAreaRef.current) return;
       const aw = slideAreaRef.current.clientWidth;
       const ah = window.innerHeight - HEADER_HEIGHT - SUBBAR_HEIGHT;
-      const byW = aw - 48; // 좌우 패딩(24px × 2)
-
-      // 레퍼런스(1480px) 기준 전체 높이 비율:
-      // 헤더:     60/1480 = 0.0405
-      // 미리보기: 600/1480 = 0.4054  (scale에 따라)
-      // 나레이션: 176/1480 = 0.1189
-      // → 합계 slideW * (0.0405 + 0.4054 + 0.1189) = slideW * 0.5648
-      // → 최소 헤더(32px), 최소 나레이션(80px) 때문에 소형에서 오차 있음
-      // 페이지네이션(48) + 상하여백(30) + 여유(6) = 84px
-      const verticalFixed = PAGINATION_HEIGHT + 30 + 6; // 84
+      const byW = aw - 48;
+      const verticalFixed = PAGINATION_HEIGHT + 30 + 6;
       const availH = ah - verticalFixed;
-      // slideW * 0.5648 <= availH → slideW <= availH / 0.5648
       const byH = Math.floor(availH / 0.5648);
-      // min=740(레퍼런스 50%), max=1924(레퍼런스 130%)
       setSlideWidth(Math.max(740, Math.min(byW, byH, 1924)));
     };
     calc();
@@ -1218,14 +1175,7 @@ function EditorScreen({
     return () => window.removeEventListener("resize", calc);
   }, [aiPanelWidth, aiCollapsed]);
 
-  // ── PDF 내보내기 ──────────────────────────────────────────
   const exportPDF = () => {
-    const sectionMap: Record<string, string[]> = {};
-    pages.forEach(p => {
-      const key = p.section_name || p.week || "—";
-      if (!sectionMap[key]) sectionMap[key] = [];
-    });
-
     const pagesHtml = pages.map((p, idx) => {
       const elems = p.slide.elements || [];
       const heading = elems.find(e => e.type === "heading")?.text || "";
@@ -1234,15 +1184,12 @@ function EditorScreen({
       const circles = elems.filter(e => e.type === "circles").flatMap(e => e.items || []);
       const emphasis = elems.find(e => e.type === "emphasis")?.text || "";
       const question = elems.find(e => e.type === "question")?.text || "";
-
       const statusColor = p.status === "approved" ? "#1A7F45" : p.status === "review" ? "#B45309" : "#666";
       const statusLabel = p.status === "approved" ? "승인" : p.status === "review" ? "검토 중" : "수정 필요";
-
       const bulletsHtml = bullets.length > 0
         ? `<ul class="bullets">${bullets.map((b, i) => `<li><span class="num">${i + 1}</span>${b}</li>`).join("")}</ul>` : "";
       const circlesHtml = circles.length > 0
         ? `<div class="circles">${circles.map((c, i) => `<div class="circle"><span class="cnum">${i + 1}</span><span>${c}</span></div>`).join("")}</div>` : "";
-
       return `
       <div class="slide-page">
         <div class="slide-header">
@@ -1263,66 +1210,39 @@ function EditorScreen({
           </div>
         </div>
         <div class="narration">${(p.narration || "").replace(/\n/g, "<br>").replace(/#(\d+)/g, '<span class="nar-badge">#$1</span>')}</div>
-      </div>`
-    }).join("")
+      </div>`;
+    }).join("");
 
     const html = `<!DOCTYPE html>
-<html lang="ko">
-<head>
-<meta charset="UTF-8">
-<title>${courseTitle || "스토리보드"} - StoryKit</title>
+<html lang="ko"><head><meta charset="UTF-8"><title>${courseTitle || "스토리보드"} - StoryKit</title>
 <style>
   @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;700;900&display=swap');
-  * { margin:0; padding:0; box-sizing:border-box; }
-  body { font-family:'Noto Sans KR','Malgun Gothic',sans-serif; background:#fff; color:#1C1C1E; font-size:11px; }
-  .slide-page { width:100%; border-bottom:2px solid #E5E5E5; padding:12px 16px 10px; page-break-after:always; }
-  .slide-page:last-child { border-bottom:none; page-break-after:auto; }
+  *{margin:0;padding:0;box-sizing:border-box}body{font-family:'Noto Sans KR','Malgun Gothic',sans-serif;background:#fff;color:#1C1C1E;font-size:11px}
+  .slide-page{width:100%;border-bottom:2px solid #E5E5E5;padding:12px 16px 10px;page-break-after:always}
+  .slide-page:last-child{border-bottom:none;page-break-after:auto}
+  .slide-header{display:flex;align-items:center;gap:8px;margin-bottom:8px;padding-bottom:6px;border-bottom:1px solid #F0F0F0}
+  .course{font-weight:700;color:#1C1C1E;font-size:12px}.section{color:#6C5CE7;font-weight:700;font-size:11px;flex:1}
+  .pagenum{color:#999;font-size:10px}.status{font-size:10px;font-weight:700}
+  .slide-body{background:#F8F8FC;border-radius:8px;padding:14px 16px;min-height:120px;margin-bottom:8px}
+  .sub-label{display:flex;align-items:center;gap:5px;color:#64748B;font-size:10px;font-weight:700;margin-bottom:8px}
+  .sub-label .bar{width:3px;height:12px;background:#EF4444;border-radius:2px}
+  .question{font-size:16px;font-weight:900;color:#1C1C1E;line-height:1.4;margin-bottom:6px}
+  .heading{font-size:18px;font-weight:900;color:#1C1C1E;line-height:1.3;margin-bottom:8px}
+  .emphasis{font-size:14px;font-weight:700;color:#6C5CE7;margin-top:6px}
+  .screen-desc{font-size:9px;color:#94A3B8;margin-top:8px}
+  .bullets{list-style:none;margin-top:6px}.bullets li{display:flex;align-items:flex-start;gap:6px;margin-bottom:4px;font-size:11px;color:#334155}
+  .bullets .num{background:#6C5CE7;color:#fff;border-radius:50%;width:16px;height:16px;display:flex;align-items:center;justify-content:center;font-size:9px;font-weight:700;flex-shrink:0;margin-top:1px}
+  .circles{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px}.circle{display:flex;flex-direction:column;align-items:center;gap:3px}
+  .circle .cnum{background:#EF4444;color:#fff;border-radius:50%;width:22px;height:22px;display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:700}
+  .circle span:last-child{font-size:9px;color:#334155;font-weight:700;text-align:center;max-width:52px}
+  .narration{background:#fff;border:1px solid #E5E5E5;border-radius:6px;padding:8px 12px;font-size:11px;line-height:1.8;color:#333;word-break:keep-all}
+  .nar-badge{background:#EF4444;color:#fff;border-radius:3px;padding:1px 4px;font-size:9px;font-weight:700;margin-right:2px}
+  @media print{body{font-size:10px}.slide-page{padding:10px 14px 8px}.heading{font-size:16px}.question{font-size:14px}@page{margin:12mm 10mm;size:A4}}
+</style></head><body>${pagesHtml}
+<script>window.onload=function(){window.print();window.onafterprint=function(){window.close();};};<\/script>
+</body></html>`;
 
-  /* 헤더 */
-  .slide-header { display:flex; align-items:center; gap:8px; margin-bottom:8px; padding-bottom:6px; border-bottom:1px solid #F0F0F0; }
-  .course { font-weight:700; color:#1C1C1E; font-size:12px; }
-  .section { color:#6C5CE7; font-weight:700; font-size:11px; flex:1; }
-  .pagenum { color:#999; font-size:10px; }
-  .status { font-size:10px; font-weight:700; }
-
-  /* 슬라이드 본문 */
-  .slide-body { background:#F8F8FC; border-radius:8px; padding:14px 16px; min-height:120px; margin-bottom:8px; position:relative; }
-  .sub-label { display:flex; align-items:center; gap:5px; color:#64748B; font-size:10px; font-weight:700; margin-bottom:8px; }
-  .sub-label .bar { width:3px; height:12px; background:#EF4444; border-radius:2px; }
-  .question { font-size:16px; font-weight:900; color:#1C1C1E; line-height:1.4; margin-bottom:6px; }
-  .heading { font-size:18px; font-weight:900; color:#1C1C1E; line-height:1.3; margin-bottom:8px; }
-  .emphasis { font-size:14px; font-weight:700; color:#6C5CE7; margin-top:6px; }
-  .screen-desc { font-size:9px; color:#94A3B8; margin-top:8px; }
-
-  /* 불릿/서클 */
-  .bullets { list-style:none; margin-top:6px; }
-  .bullets li { display:flex; align-items:flex-start; gap:6px; margin-bottom:4px; font-size:11px; color:#334155; }
-  .bullets .num { background:#6C5CE7; color:#fff; border-radius:50%; width:16px; height:16px; display:flex; align-items:center; justify-content:center; font-size:9px; font-weight:700; flex-shrink:0; margin-top:1px; }
-  .circles { display:flex; gap:8px; flex-wrap:wrap; margin-top:8px; }
-  .circle { display:flex; flex-direction:column; align-items:center; gap:3px; }
-  .circle .cnum { background:#EF4444; color:#fff; border-radius:50%; width:22px; height:22px; display:flex; align-items:center; justify-content:center; font-size:10px; font-weight:700; }
-  .circle span:last-child { font-size:9px; color:#334155; font-weight:700; text-align:center; max-width:52px; }
-
-  /* 나레이션 */
-  .narration { background:#fff; border:1px solid #E5E5E5; border-radius:6px; padding:8px 12px; font-size:11px; line-height:1.8; color:#333; word-break:keep-all; }
-  .nar-badge { background:#EF4444; color:#fff; border-radius:3px; padding:1px 4px; font-size:9px; font-weight:700; margin-right:2px; }
-
-  @media print {
-    body { font-size:10px; }
-    .slide-page { padding:10px 14px 8px; }
-    .heading { font-size:16px; }
-    .question { font-size:14px; }
-    @page { margin:12mm 10mm; size:A4; }
-  }
-</style>
-</head>
-<body>
-  ${pagesHtml}
-  <script>window.onload=function(){window.print();window.onafterprint=function(){window.close();};}<\/script>
-</body>
-</html>`
-
-    const win = window.open("", "_blank", "width=960,height=700")
+    const win = window.open("", "_blank", "width=960,height=700");
     if (win) { win.document.write(html); win.document.close(); }
   };
 
@@ -1362,7 +1282,6 @@ function EditorScreen({
 
   return (
     <div className="h-screen flex flex-col font-sans bg-muted overflow-hidden">
-      {/* 헤더 */}
       <header className="bg-card border-b border-border flex items-center px-4 gap-2.5 shrink-0" style={{ height: HEADER_HEIGHT }}>
         <div className="w-6 h-6 bg-primary rounded-lg flex items-center justify-center text-primary-foreground font-extrabold text-[13px]">S</div>
         <span className="font-extrabold text-sm text-foreground tracking-tight">StoryKit</span>
@@ -1392,7 +1311,6 @@ function EditorScreen({
         </div>
       </header>
 
-      {/* 서브바 */}
       <div className="bg-card border-b border-muted flex items-center px-4 gap-3.5 text-xs text-muted-foreground shrink-0" style={{ height: SUBBAR_HEIGHT }}>
         <span>총 <strong className="text-foreground">{pages.length}페이지</strong></span>
         <span className="text-border">·</span>
@@ -1405,7 +1323,6 @@ function EditorScreen({
         </Button>
       </div>
 
-      {/* 바디 */}
       <div ref={containerRef} className="flex-1 flex overflow-hidden">
         <AiPanel
           collapsed={aiCollapsed}
@@ -1420,15 +1337,12 @@ function EditorScreen({
             className={cn("w-1 cursor-ew-resize transition-colors shrink-0 hover:bg-primary", isDragging ? "bg-primary" : "bg-border")} />
         )}
 
-        {/* 슬라이드 영역: 상단 슬라이드 + 하단 페이지네이션 고정 */}
         <div ref={slideAreaRef} className="flex-1 flex flex-col overflow-hidden">
           {viewMode === "single" ? (
             <>
-              {/* 슬라이드 스크롤 가능 영역 */}
               <div className="flex-1 overflow-y-auto flex flex-col items-center" style={{ padding: "14px 24px 16px" }}>
                 <SlideView page={currentPage} onUpdate={updatePage} slideWidth={slideWidth} indexStructure={indexStructure} />
               </div>
-              {/* 페이지네이션 - 항상 하단 고정 */}
               <div className="shrink-0 flex items-center justify-center gap-2 border-t border-slate-200 bg-white/90 backdrop-blur-sm" style={{ height: PAGINATION_HEIGHT, paddingBottom: 10 }}>
                 <button onClick={() => setCurrentIdx(i => Math.max(0, i - 1))} disabled={currentIdx === 0}
                   className="flex items-center gap-1 px-3 py-1.5 rounded-lg border border-slate-200 text-xs font-semibold text-slate-600 disabled:opacity-30 hover:border-slate-400 transition-all">
