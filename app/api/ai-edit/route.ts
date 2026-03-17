@@ -1,33 +1,84 @@
 import { NextRequest, NextResponse } from "next/server";
 
-// ══════════════════════════════════════════════════════════════
-// 모델 설정
-// - gemini-2.5-flash : 현재 GA 최신 모델 (2026-03 기준)
-//   엔드포인트: v1beta (systemInstruction 지원)
-// ══════════════════════════════════════════════════════════════
-const GEMINI_MODEL = "gemini-2.5-flash";
-const GEMINI_ENDPOINT = (model: string) =>
-  `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${process.env.GOOGLE_AI_API_KEY}`;
+// ╔══════════════════════════════════════════════════════════════════╗
+// ║  StoryKit API Route — Dual Model Architecture                   ║
+// ║  ① Gemini 2.5 Flash  : 스토리보드 JSON 생성 / 슬라이드 편집     ║
+// ║  ② Nano Banana 2     : 슬라이드 배경 이미지 생성 (선택적)        ║
+// ╚══════════════════════════════════════════════════════════════════╝
 
-// ══════════════════════════════════════════════════════════════
+// ──────────────────────────────────────────────────────────────────
+// 모델 & 엔드포인트 설정
+// ──────────────────────────────────────────────────────────────────
+const MODELS = {
+  text:  "gemini-2.5-flash",               // 스토리보드 생성 / 편집
+  image: "gemini-3.1-flash-image-preview", // Nano Banana 2
+} as const;
+
+const API_BASE = "https://generativelanguage.googleapis.com/v1beta/models";
+const API_KEY  = process.env.GOOGLE_AI_API_KEY ?? "";
+
+const endpoint = (model: string) =>
+  `${API_BASE}/${model}:generateContent?key=${API_KEY}`;
+
+// ──────────────────────────────────────────────────────────────────
+// 타입 정의
+// ──────────────────────────────────────────────────────────────────
+interface Element {
+  id: string;
+  order: number;
+  type: string;
+  text?: string;
+  items?: string[];
+  style?: string;
+  active?: number;
+}
+
+interface Slide {
+  title: string;
+  subtitle?: string;
+  elements: Element[];
+}
+
+interface Page {
+  page_id: string;
+  section: string;
+  sub_section: string;
+  layout: string;
+  status: string;
+  slide: Slide;
+  screen_desc: string;
+  narration: string;
+  background_image?: string; // base64 PNG — Nano Banana 2 생성
+  image_prompt?: string;     // 디버깅용 프롬프트
+}
+
+interface Storyboard {
+  course_title: string;
+  week: string;
+  chapter: string;
+  index: { section: string; items: string[] }[];
+  pages: Page[];
+}
+
+// ──────────────────────────────────────────────────────────────────
 // 시스템 프롬프트 — SKILL.md + narration-rules.md + layout-types.md 통합
-// ══════════════════════════════════════════════════════════════
+// ──────────────────────────────────────────────────────────────────
 const STORYBOARD_SYSTEM_PROMPT = `
 너는 10년 이상 경력의 이러닝 교수설계자다.
 ADDIE 모델과 Gagne의 9단계 교수 이론에 기반하여
 대학 강의, 기업 교육, 공공기관 이러닝 콘텐츠의 스토리보드를 작성한다.
 
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 ## 슬라이드 설계 원칙
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 - 1슬라이드 = 1핵심개념 (인지 부하 최소화)
 - 나레이션과 화면 요소는 반드시 연동 (멀티미디어 학습 이론)
 - 텍스트는 키워드 중심, 문장 금지 (bullets는 10자 이내)
 - 시각적 위계: 크기·색상·배치로 중요도 표현
 
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 ## 차시 구성 5단계 (반드시 준수)
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 1단계 [도입]       layout: title_intro
                    학습목표 제시, 동기유발 질문
                    나레이션: "이번 시간에는 ~을 학습합니다"
@@ -44,106 +95,75 @@ ADDIE 모델과 Gagne의 9단계 교수 이론에 기반하여
 5단계 [정리]       layout: summary_dark
                    핵심 3가지 요약, "정리하겠습니다"로 나레이션 시작
 
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 ## 레이아웃 타입 8종
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 A. concept_circles   — 병렬 개념 3~4개, 순환/프로세스 구조
-   구성: 원형 노드(색상+번호뱃지), 화살표 연결, 하단 결론자막, 강사PIP
-   elements: { type:"circles", items:["분석","설계","개발","배포"] }
+   elements: { type:"circles", items:["개념1","개념2","개념3"] }
              { type:"emphasis", text:"핵심 결론 문장" }
 
-B. tabs_sequential   — 번호탭 순차 강조, 3개 하위항목 순차 설명
-   구성: 대제목(밑줄+녹색), 탭 3개(활성/비활성), 설명박스(bullets), 강사우측
+B. tabs_sequential   — 번호탭 순차 강조, 3개 하위항목
    elements: { type:"heading", text:"대제목" }
              { type:"tabs", items:["탭1","탭2","탭3"], active:0 }
              { type:"bullets", items:["항목1","항목2"] }
 
-C. speech_bubble     — 교수-학생 대화, 질문 제시 후 답변, 도입 질문
-   구성: 질문 말풍선(베이지/흰색), 답변 말풍선(녹색+강조), 강사우측
+C. speech_bubble     — 교수-학생 대화, 질문 제시 후 답변
    elements: { type:"question", text:"질문 문장?" }
              { type:"speech", text:"답변 내용", style:"answer" }
 
 D. label_list        — 4개 이하 역할/요소 순서 설명
-   구성: 라벨박스 4개(활성1=녹색, 나머지=회색), 설명박스(bullets), 강사우측
    elements: { type:"label_list", items:["항목1","항목2","항목3","항목4"], active:0 }
              { type:"bullets", items:["설명1","설명2"] }
 
 E. instructor_speech — 강사 직접 강조, 핵심 메시지, 동기부여
-   구성: 강사전면/우측, 대형 강조텍스트(이탤릭/굵게), 설명말풍선
    elements: { type:"heading", text:"핵심 메시지!", style:"large_italic" }
              { type:"speech", text:"설명 내용" }
 
-F. image_caption     — 실제 사례 사진, 게티이미지, 영상캡처 포함 슬라이드
-   구성: 상단 이미지(전체너비 50~60%), 하단 번호원+라벨, 설명박스(bullets)
+F. image_caption     — 실제 사례 사진, 이미지 포함 슬라이드
    elements: { type:"heading", text:"핵심 제목" }
              { type:"bullets", items:["설명1","설명2"] }
-   screen_desc에 이미지 번호 기재 필수
+   screen_desc에 이미지 번호 또는 설명 기재 필수
 
-G. split_two         — 2개 개념 대비/병렬 비교, 좌우 대칭 구조
-   구성: 배경 좌우분할(색상다름), 각 영역 대형원형 1개, 원형아래 라벨, PIP우측하단
+G. split_two         — 2개 개념 대비/병렬 비교, 좌우 대칭
    elements: { type:"circles", items:["개념A","개념B"], style:"split_large" }
 
 H. summary_dark      — 차시/섹션 마무리, 핵심 3가지 요약
-   구성: 다크배경(딥그린 #1a3d2b), 흰색 대제목, 베이지 콘텐츠박스(bullets), 캐릭터원형(우측)
    elements: { type:"heading", text:"정리 제목" }
              { type:"bullets", items:["핵심1","핵심2","핵심3"] }
 
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 ## 나레이션 작성 규칙
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 길이: 150~200자 (초당 6자, 약 25~33초)
 문체: 구어체 강의 말투
   - ~입니다 → ~이에요 / ~이랍니다
   - ~하게 됩니다 → ~하게 돼요
-  - ~라고 할 수 있습니다 → ~라고 할 수 있어요
 마무리: 다음 슬라이드 연결어 필수
 
-큐(Cue) 표기 규칙:
-  #0 = 장면 전환, 섹션 시작, 강사 등장
+큐(Cue) 표기:
+  #0 = 장면 전환, 섹션 시작
   #1 = 첫 번째 화면 요소 등장
-  #2 = 두 번째 요소 등장
-  #3~#5 = 이후 요소 순서대로
+  #2~#5 = 이후 요소 순서대로
+  올바른 예: "#1 첫 번째는..." (문장 앞)
+  금지 예: "첫 번째가 #1 중요" (문장 중간)
+  금지 예: "#1 #2 두 가지" (연속 큐)
 
-큐 위치 규칙:
-  ✅ "#1 첫 번째는 진실성 확보와..."  ← 문장 앞에 위치
-  ❌ "진실성 확보가 #1 중요합니다."  ← 문장 중간 금지
-  ❌ "#1 #2 두 가지가 있습니다."     ← 연속 큐 금지
-
-나레이션 패턴 예시:
-  [도입] "이번 시간에는 ~에 대해 살펴보겠습니다.
-         #1 이 시간을 통해 ~을 알아보고요,
-         #2 ~에 대해서도 함께 생각해볼 거예요."
-
-  [정리] "정리하겠습니다. 첫 번째, ~를 살펴봤습니다.
-         #1 ~의 역할과 #2 ~의 중요성에 대해 알아봤고요.
-         다음 시간에는 ~에 대해 배워보겠습니다."
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 ## element type 규칙
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-heading      — 슬라이드 핵심 제목, 15자 이내, 항상 1개
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+heading      — 15자 이내, 슬라이드당 1개 필수
 subtitle_text — 보조 설명, 한 줄
-circles      — 병렬 개념, items: 2~4자 핵심어만
-bullets      — 순서/항목, items: "키워드: 설명" 형태, 10자 이내
-emphasis     — 핵심 정의 강조, 30자 이내 1문장
-question     — 질문 유도, "~인가요?" / "~일까요?" 형태
-tabs         — 번호탭 순차, items: 탭 라벨 배열
-label_list   — 연번 라벨 목록, items: 라벨 텍스트 배열
-speech       — 말풍선, text: 대화체 문장
+circles      — items: 2~4자 핵심어만
+bullets      — items: 10자 이내
+emphasis     — 30자 이내 1문장
+question     — "~인가요?" / "~일까요?" 형태
+tabs         — items: 탭 라벨 배열
+label_list   — items: 라벨 텍스트 배열
+speech       — 대화체 문장
 
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-## 원고 분석 절차
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-1. 메타 추출: 과정명, 주차, 차시, 담당 교수 자동 인식
-2. 섹션 분리: 원고의 소제목/번호 구조로 INDEX 자동 구성
-3. 콘텐츠 분류: 각 섹션을 5단계 중 어느 단계인지 판단
-4. 레이아웃 선택: 콘텐츠 성격에 따라 8종 중 최적 타입 선택
-5. 나레이션 추출: 원고 문장을 구어체로 변환, 큐 삽입
-6. 품질 검증: 아래 체크리스트 충족 여부 확인 후 자동 수정
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-## 품질 체크리스트 (자동 검증 후 미충족 시 수정)
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+## 품질 체크리스트 (미충족 시 자동 수정)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 - 차시당 [도입] 슬라이드 1개 이상
 - 차시당 [정리] 슬라이드 1개 이상
 - 나레이션 150자 이상 (전 페이지)
@@ -152,21 +172,16 @@ speech       — 말풍선, text: 대화체 문장
 - heading 타입 반드시 포함
 - bullets items 10자 이내
 - circles items 4자 이내
-- layout 값이 8종(concept_circles/tabs_sequential/speech_bubble/label_list/instructor_speech/image_caption/split_two/summary_dark/title_intro/question_check) 중 하나
+- layout 값이 8종 중 하나
 
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 ## 출력 JSON 스키마 (순수 JSON만, { 로 시작 } 로 끝)
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 {
   "course_title": "과정명",
   "week": "1주차",
   "chapter": "1차시",
-  "index": [
-    {
-      "section": "인트로",
-      "items": ["동기유발/학습목표", "섹션명1", "섹션명2", "정리하기", "아웃트로"]
-    }
-  ],
+  "index": [{ "section": "섹션명", "items": ["항목1","항목2"] }],
   "pages": [
     {
       "page_id": "02_01_01_01",
@@ -179,11 +194,11 @@ speech       — 말풍선, text: 대화체 문장
         "subtitle": "서브 제목",
         "elements": [
           { "id": "el-1", "order": 1, "type": "heading", "text": "핵심 제목" },
-          { "id": "el-2", "order": 2, "type": "bullets", "items": ["항목1", "항목2"] }
+          { "id": "el-2", "order": 2, "type": "bullets", "items": ["항목1","항목2"] }
         ]
       },
-      "screen_desc": "화면 구성 설명 (이미지 번호, 모션 번호 등)",
-      "narration": "#1 나레이션 텍스트 (150~200자, 구어체)"
+      "screen_desc": "화면 구성 설명",
+      "narration": "#1 나레이션 (150~200자, 구어체)"
     }
   ]
 }
@@ -200,10 +215,56 @@ const EDIT_SYSTEM_PROMPT = `
 }
 `.trim();
 
-// ══════════════════════════════════════════════════════════════
-// Gemini API 공통 호출 함수
-// ══════════════════════════════════════════════════════════════
-async function callGemini({
+const IMAGE_PROMPT_SYSTEM = `
+너는 이러닝 슬라이드용 이미지 프롬프트 전문가다.
+슬라이드 정보를 분석해서 Nano Banana 2(gemini-3.1-flash-image-preview)용
+영문 이미지 프롬프트를 생성한다.
+
+규칙:
+- 16:9 교육용 슬라이드 배경에 최적화
+- 깔끔하고 전문적인 스타일 (corporate / educational)
+- 텍스트 오버레이를 위한 여백 확보 (좌측 1/3 또는 상단 여백)
+- 한국 교육 콘텐츠에 적합한 톤
+
+레이아웃별 스타일 가이드:
+  title_intro      → bright, clean geometric graphic background
+  concept_circles  → connected circular icons, abstract flow graphic
+  tabs_sequential  → horizontal step-flow background, gradient progression
+  speech_bubble    → soft gradient, communication / dialogue feel
+  image_caption    → relevant realistic or illustrated image center
+  split_two        → contrasting left/right color background
+  summary_dark     → dark professional background, closing feel
+  label_list       → clean minimal background suggesting ordered list
+  instructor_speech → warm, motivational background
+  question_check   → light, open background suggesting thinking space
+
+- 반드시 영어로만 출력
+- 50~80단어 이내의 간결한 프롬프트
+- JSON 형식으로만 출력: { "prompt": "..." }
+`.trim();
+
+// ──────────────────────────────────────────────────────────────────
+// 유틸
+// ──────────────────────────────────────────────────────────────────
+function cleanJson(raw: string): string {
+  return raw
+    .replace(/```json\s*/gi, "")
+    .replace(/```\s*/gi, "")
+    .trim();
+}
+
+function safeParseJson<T>(text: string): T | null {
+  try {
+    return JSON.parse(cleanJson(text)) as T;
+  } catch {
+    return null;
+  }
+}
+
+// ──────────────────────────────────────────────────────────────────
+// [공통] Gemini 2.5 Flash 텍스트 호출
+// ──────────────────────────────────────────────────────────────────
+async function callGeminiText({
   systemPrompt,
   userText,
   temperature = 0.4,
@@ -214,7 +275,7 @@ async function callGemini({
   temperature?: number;
   maxOutputTokens?: number;
 }): Promise<string> {
-  const res = await fetch(GEMINI_ENDPOINT(GEMINI_MODEL), {
+  const res = await fetch(endpoint(MODELS.text), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -223,88 +284,203 @@ async function callGemini({
       generationConfig: {
         temperature,
         maxOutputTokens,
-        // JSON 출력 강제 (gemini-2.5-flash 지원)
         responseMimeType: "application/json",
       },
     }),
   });
 
   if (!res.ok) {
-    const errBody = await res.text();
-    throw new Error(`Gemini API 오류: ${res.status} - ${errBody}`);
+    const err = await res.text();
+    throw new Error(`Gemini Text 오류: ${res.status} - ${err}`);
   }
 
   const data = await res.json();
   return data.candidates?.[0]?.content?.parts?.[0]?.text ?? "";
 }
 
-// ══════════════════════════════════════════════════════════════
-// JSON 클리닝 유틸
-// ══════════════════════════════════════════════════════════════
-function cleanJson(raw: string): string {
-  return raw
-    .replace(/```json\s*/gi, "")
-    .replace(/```\s*/gi, "")
-    .trim();
+// ──────────────────────────────────────────────────────────────────
+// [이미지] Nano Banana 2 호출
+// ──────────────────────────────────────────────────────────────────
+async function callNanoBanana2(prompt: string): Promise<string> {
+  const res = await fetch(endpoint(MODELS.image), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      contents: [{ parts: [{ text: prompt }] }],
+      generationConfig: {
+        responseModalities: ["TEXT", "IMAGE"], // ← 필수 (IMAGE만 설정 시 오류)
+        imageConfig: { aspectRatio: "16:9" },
+      },
+    }),
+  });
+
+  if (!res.ok) {
+    const err = await res.text();
+    throw new Error(`Nano Banana 2 오류: ${res.status} - ${err}`);
+  }
+
+  const data = await res.json();
+  type Part = { text?: string; inlineData?: { data: string; mimeType: string } };
+  const parts: Part[] = data.candidates?.[0]?.content?.parts ?? [];
+  const imagePart = parts.find((p) => p.inlineData);
+  return imagePart?.inlineData?.data ?? "";
 }
 
-// ══════════════════════════════════════════════════════════════
+// ──────────────────────────────────────────────────────────────────
 // [모드 1] 스토리보드 생성
-// ══════════════════════════════════════════════════════════════
-async function generateStoryboard(pdfText: string): Promise<string> {
-  return callGemini({
+// ──────────────────────────────────────────────────────────────────
+async function generateStoryboard(pdfText: string): Promise<Storyboard | null> {
+  const raw = await callGeminiText({
     systemPrompt: STORYBOARD_SYSTEM_PROMPT,
     userText: `아래 원고를 분석하여 교수설계 5단계에 따라 스토리보드 JSON을 생성해주세요.\n\n${pdfText.substring(0, 12000)}`,
     temperature: 0.4,
     maxOutputTokens: 8192,
   });
+  return safeParseJson<Storyboard>(raw);
 }
 
-// ══════════════════════════════════════════════════════════════
+// ──────────────────────────────────────────────────────────────────
 // [모드 2] 슬라이드 편집
-// ══════════════════════════════════════════════════════════════
+// ──────────────────────────────────────────────────────────────────
 async function editSlide(message: string, slideContext: unknown): Promise<string> {
-  const userText = `
-현재 슬라이드:
-${JSON.stringify(slideContext, null, 2)}
-
-사용자 요청: ${message}
-  `.trim();
-
-  return callGemini({
+  return callGeminiText({
     systemPrompt: EDIT_SYSTEM_PROMPT,
-    userText,
+    userText: `현재 슬라이드:\n${JSON.stringify(slideContext, null, 2)}\n\n사용자 요청: ${message}`,
     temperature: 0.3,
     maxOutputTokens: 2048,
   });
 }
 
-// ══════════════════════════════════════════════════════════════
+// ──────────────────────────────────────────────────────────────────
+// [모드 3] 슬라이드 배경 이미지 생성
+// ──────────────────────────────────────────────────────────────────
+async function generateSlideImage(page: Page): Promise<{ base64: string; prompt: string }> {
+  // Step 1 — Gemini 2.5 Flash로 최적 이미지 프롬프트 생성
+  const rawPrompt = await callGeminiText({
+    systemPrompt: IMAGE_PROMPT_SYSTEM,
+    userText: `
+슬라이드 정보:
+- 제목: ${page.slide.title}
+- 서브제목: ${page.slide.subtitle ?? ""}
+- 레이아웃: ${page.layout}
+- 섹션: ${page.section}
+- 화면 설명: ${page.screen_desc}
+- 핵심 요소: ${page.slide.elements.map((e) => e.text ?? e.items?.join(", ") ?? "").join(" | ")}
+    `.trim(),
+    temperature: 0.7,
+    maxOutputTokens: 300,
+  });
+
+  const promptData = safeParseJson<{ prompt: string }>(rawPrompt);
+  const imagePrompt =
+    promptData?.prompt ??
+    `Professional educational slide background for "${page.slide.title}", clean modern design, 16:9, space for text overlay on left third`;
+
+  // Step 2 — Nano Banana 2로 이미지 생성
+  const base64 = await callNanoBanana2(imagePrompt);
+  return { base64, prompt: imagePrompt };
+}
+
+// ──────────────────────────────────────────────────────────────────
+// [모드 4] 전체 스토리보드 이미지 배치 생성
+// ──────────────────────────────────────────────────────────────────
+async function generateImagesForStoryboard(
+  storyboard: Storyboard,
+  targetPageIds?: string[]
+): Promise<Storyboard> {
+  const results = await Promise.allSettled(
+    storyboard.pages.map(async (page) => {
+      if (targetPageIds && !targetPageIds.includes(page.page_id)) return page;
+
+      try {
+        const { base64, prompt } = await generateSlideImage(page);
+        return { ...page, background_image: base64, image_prompt: prompt };
+      } catch (err) {
+        console.warn(`[이미지 생성 실패] ${page.page_id}:`, err);
+        return page; // 실패해도 원본 유지
+      }
+    })
+  );
+
+  return {
+    ...storyboard,
+    pages: results.map((r) => (r.status === "fulfilled" ? r.value : storyboard.pages[0])),
+  };
+}
+
+// ──────────────────────────────────────────────────────────────────
 // 메인 핸들러
-// ══════════════════════════════════════════════════════════════
+// ──────────────────────────────────────────────────────────────────
 export async function POST(req: NextRequest) {
   try {
-    const { message, slideContext, pdfText } = await req.json();
-    const isGenerateMode = !!pdfText;
+    const body = await req.json();
+    const {
+      mode,          // "generate" | "generate_with_images" | "image" | "edit"
+      pdfText,       // 원고 텍스트
+      message,       // 편집 요청 메시지
+      slideContext,  // 단일 슬라이드 컨텍스트
+      storyboard,    // 전체 스토리보드 (이미지 추가용)
+      targetPageIds, // 이미지 생성 대상 page_id 배열 (미지정 시 전체)
+    } = body;
 
-    const rawText = isGenerateMode
-      ? await generateStoryboard(pdfText)
-      : await editSlide(message, slideContext);
+    // 하위 호환 — mode 미지정 시 자동 감지
+    const resolvedMode: string =
+      mode ?? (pdfText ? "generate" : message ? "edit" : "unknown");
 
-    const cleaned = cleanJson(rawText);
+    // ── generate ──────────────────────────────────────────────────
+    if (resolvedMode === "generate") {
+      if (!pdfText) return NextResponse.json({ error: "pdfText 필요" }, { status: 400 });
 
-    try {
-      return NextResponse.json({ result: JSON.parse(cleaned) });
-    } catch {
-      // JSON 파싱 실패 시 원문 반환 (디버깅용)
-      console.warn("JSON 파싱 실패, 원문 반환:", cleaned.substring(0, 200));
-      return NextResponse.json({ result: rawText, raw: true });
+      const result = await generateStoryboard(pdfText);
+      if (!result) return NextResponse.json({ error: "스토리보드 생성 실패" }, { status: 500 });
+
+      return NextResponse.json({ result });
     }
+
+    // ── generate_with_images ──────────────────────────────────────
+    if (resolvedMode === "generate_with_images") {
+      if (!pdfText) return NextResponse.json({ error: "pdfText 필요" }, { status: 400 });
+
+      const board = await generateStoryboard(pdfText);
+      if (!board) return NextResponse.json({ error: "스토리보드 생성 실패" }, { status: 500 });
+
+      const boardWithImages = await generateImagesForStoryboard(board, targetPageIds);
+      return NextResponse.json({ result: boardWithImages });
+    }
+
+    // ── image (기존 스토리보드에 이미지 추가) ──────────────────────
+    if (resolvedMode === "image") {
+      if (slideContext) {
+        // 단일 슬라이드
+        const { base64, prompt } = await generateSlideImage(slideContext as Page);
+        return NextResponse.json({ result: { background_image: base64, image_prompt: prompt } });
+      }
+      if (storyboard) {
+        // 전체 스토리보드
+        const boardWithImages = await generateImagesForStoryboard(storyboard as Storyboard, targetPageIds);
+        return NextResponse.json({ result: boardWithImages });
+      }
+      return NextResponse.json({ error: "slideContext 또는 storyboard 필요" }, { status: 400 });
+    }
+
+    // ── edit ──────────────────────────────────────────────────────
+    if (resolvedMode === "edit") {
+      if (!message) return NextResponse.json({ error: "message 필요" }, { status: 400 });
+
+      const raw = await editSlide(message, slideContext);
+      const parsed = safeParseJson(raw);
+      return NextResponse.json(parsed ? { result: parsed } : { result: raw, raw: true });
+    }
+
+    // ── unknown ───────────────────────────────────────────────────
+    return NextResponse.json(
+      { error: "알 수 없는 mode", validModes: ["generate", "generate_with_images", "image", "edit"] },
+      { status: 400 }
+    );
   } catch (err) {
     console.error("API Error:", err);
-    const message = err instanceof Error ? err.message : "Unknown error";
     return NextResponse.json(
-      { error: "Internal server error", detail: message },
+      { error: "Internal server error", detail: err instanceof Error ? err.message : String(err) },
       { status: 500 }
     );
   }
