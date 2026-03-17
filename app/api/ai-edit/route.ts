@@ -1,67 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 
-// ─── Gemini로 원고 구조 분석 ──────────────────────────────────────
-async function analyzeWithGemini(pdfText: string): Promise<string> {
-  const res = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${process.env.GOOGLE_AI_API_KEY}`,
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        contents: [
-          {
-            parts: [
-              {
-                text: `다음 이러닝 원고를 분석해서 아래 JSON 형식으로만 반환해줘.
-다른 텍스트 없이 { 로 시작해서 } 로 끝나는 순수 JSON만 출력.
-
-{
-  "course_title": "과정명",
-  "week": "주차명",
-  "chapter": "차시명",
-  "sections": [
-    {
-      "section_id": "01",
-      "section_name": "섹션명",
-      "section_type": "intro | concept | emphasis | question | summary",
-      "key_concepts": ["핵심개념1", "핵심개념2"],
-      "keywords": ["강조키워드1", "강조키워드2"],
-      "content_summary": "이 섹션의 핵심 내용 요약 (2~3문장)",
-      "recommended_layout": "title_intro | concept_circles | tabs_sequential | speech_bubble | label_list | instructor_speech | image_caption | split_two | summary_dark",
-      "image_keyword": "게티이미지 검색용 영문 키워드",
-      "narration_source": "원고에서 나레이션으로 쓸 핵심 문장들 추출"
-    }
-  ],
-  "index": ["섹션1명", "섹션2명", "섹션3명"]
-}
-
-원고:
-${pdfText.substring(0, 8000)}`,
-              },
-            ],
-          },
-        ],
-        generationConfig: {
-          temperature: 0.2,
-          maxOutputTokens: 4096,
-        },
-      }),
-    }
-  );
-
-  if (!res.ok) throw new Error(`Gemini API 오류: ${res.status}`);
-  const data = await res.json();
-  return data.candidates?.[0]?.content?.parts?.[0]?.text ?? "";
-}
-
-// ─── Gemini로 스토리보드 생성 ────────────────────────────────────
-async function generateWithGemini(
-  geminiAnalysis: string,
-  pdfText: string
-): Promise<string> {
-  const systemPrompt = `
-너는 10년 이상 경력의 이러닝 교수설계자다.
-아래 원고 분석 결과를 바탕으로 교수설계 원칙에 따라 슬라이드 스토리보드 JSON을 생성한다.
+// ─── Gemini 단일 호출로 스토리보드 생성 (분석+생성 통합) ──────────
+async function generateStoryboard(pdfText: string): Promise<string> {
+  const systemPrompt = `너는 10년 이상 경력의 이러닝 교수설계자다.
+원고를 읽고 교수설계 원칙에 따라 슬라이드 스토리보드 JSON을 바로 생성한다.
 
 ## 교수설계 5단계 (차시별 반드시 준수)
 1단계 [도입]      layout: title_intro       학습목표 제시
@@ -115,15 +57,6 @@ async function generateWithGemini(
   ]
 }`;
 
-  const userContent = `
-아래는 Gemini가 분석한 원고 구조입니다. 이를 바탕으로 스토리보드를 생성해주세요.
-
-[Gemini 분석 결과]
-${geminiAnalysis}
-
-[원본 원고 일부]
-${pdfText.substring(0, 3000)}`;
-
   const res = await fetch(
     `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${process.env.GOOGLE_AI_API_KEY}`,
     {
@@ -131,7 +64,7 @@ ${pdfText.substring(0, 3000)}`;
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         systemInstruction: { parts: [{ text: systemPrompt }] },
-        contents: [{ parts: [{ text: userContent }] }],
+        contents: [{ parts: [{ text: `아래 원고를 바탕으로 스토리보드 JSON을 생성해주세요.\n\n${pdfText.substring(0, 10000)}` }] }],
         generationConfig: {
           temperature: 0.4,
           maxOutputTokens: 8192,
@@ -140,7 +73,10 @@ ${pdfText.substring(0, 3000)}`;
     }
   );
 
-  if (!res.ok) throw new Error(`Gemini API 오류: ${res.status}`);
+  if (!res.ok) {
+    const errBody = await res.text();
+    throw new Error(`Gemini API 오류: ${res.status} - ${errBody}`);
+  }
   const data = await res.json();
   return data.candidates?.[0]?.content?.parts?.[0]?.text ?? "";
 }
@@ -151,18 +87,10 @@ export async function POST(req: NextRequest) {
     const { message, slideContext, pdfText } = await req.json();
     const isGenerateMode = !!pdfText;
 
-    // ── 생성 모드: Gemini 분석 → Gemini 생성 ─────────────────────
+    // ── 생성 모드: Gemini 단일 호출 ───────────────────────────────
     if (isGenerateMode) {
-      console.log("[1단계] Gemini로 원고 구조 분석 중...");
-      let geminiResult = "";
-      try {
-        geminiResult = await analyzeWithGemini(pdfText);
-      } catch (e) {
-        console.warn("Gemini 분석 실패, 단독 생성 모드로 전환:", e);
-      }
-
-      console.log("[2단계] Gemini로 스토리보드 생성 중...");
-      const rawText = await generateWithGemini(geminiResult, pdfText);
+      console.log("[Gemini] 스토리보드 생성 중...");
+      const rawText = await generateStoryboard(pdfText);
       const cleaned = rawText.replace(/```json\s*/gi, "").replace(/```\s*/gi, "").trim();
       try {
         return NextResponse.json({ result: JSON.parse(cleaned) });
