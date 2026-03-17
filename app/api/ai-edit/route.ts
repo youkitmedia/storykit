@@ -54,8 +54,8 @@ ${pdfText.substring(0, 8000)}`,
   return data.candidates?.[0]?.content?.parts?.[0]?.text ?? "";
 }
 
-// ─── Claude로 스토리보드 생성 ─────────────────────────────────────
-async function generateWithClaude(
+// ─── Gemini로 스토리보드 생성 ────────────────────────────────────
+async function generateWithGemini(
   geminiAnalysis: string,
   pdfText: string
 ): Promise<string> {
@@ -124,64 +124,54 @@ ${geminiAnalysis}
 [원본 원고 일부]
 ${pdfText.substring(0, 3000)}`;
 
-  const res = await fetch("https://api.anthropic.com/v1/messages", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "x-api-key": process.env.ANTHROPIC_API_KEY ?? "",
-      "anthropic-version": "2023-06-01",
-    },
-    body: JSON.stringify({
-      model: "claude-sonnet-4-6",
-      max_tokens: 8000,
-      system: systemPrompt,
-      messages: [{ role: "user", content: userContent }],
-    }),
-  });
+  const res = await fetch(
+    `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${process.env.GOOGLE_AI_API_KEY}`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        systemInstruction: { parts: [{ text: systemPrompt }] },
+        contents: [{ parts: [{ text: userContent }] }],
+        generationConfig: {
+          temperature: 0.4,
+          maxOutputTokens: 8192,
+        },
+      }),
+    }
+  );
 
-  if (!res.ok) throw new Error(`Claude API 오류: ${res.status}`);
+  if (!res.ok) throw new Error(`Gemini API 오류: ${res.status}`);
   const data = await res.json();
-  return data.content?.[0]?.text ?? "";
+  return data.candidates?.[0]?.content?.parts?.[0]?.text ?? "";
 }
 
 // ─── 메인 핸들러 ─────────────────────────────────────────────────
 export async function POST(req: NextRequest) {
   try {
-    const { message, slideContext, pdfText, useGemini } = await req.json();
+    const { message, slideContext, pdfText } = await req.json();
     const isGenerateMode = !!pdfText;
 
-    // ── 생성 모드: Gemini 분석 → Claude 생성 ──────────────────────
+    // ── 생성 모드: Gemini 분석 → Gemini 생성 ─────────────────────
     if (isGenerateMode) {
-      let rawText: string;
-
-      if (useGemini && process.env.GOOGLE_AI_API_KEY) {
-        // 투트랙: Gemini 분석 → Claude 스토리보드
-        console.log("[1단계] Gemini로 원고 구조 분석 중...");
-        let geminiResult = "";
-        try {
-          geminiResult = await analyzeWithGemini(pdfText);
-        } catch (e) {
-          console.warn("Gemini 분석 실패, Claude 단독 모드로 전환:", e);
-        }
-
-        console.log("[2단계] Claude로 스토리보드 생성 중...");
-        rawText = await generateWithClaude(geminiResult, pdfText);
-
-      } else {
-        // 단일 모드: Claude만 사용
-        rawText = await generateWithClaude("", pdfText);
+      console.log("[1단계] Gemini로 원고 구조 분석 중...");
+      let geminiResult = "";
+      try {
+        geminiResult = await analyzeWithGemini(pdfText);
+      } catch (e) {
+        console.warn("Gemini 분석 실패, 단독 생성 모드로 전환:", e);
       }
 
+      console.log("[2단계] Gemini로 스토리보드 생성 중...");
+      const rawText = await generateWithGemini(geminiResult, pdfText);
       const cleaned = rawText.replace(/```json\s*/gi, "").replace(/```\s*/gi, "").trim();
       try {
-        const parsed = JSON.parse(cleaned);
-        return NextResponse.json({ result: parsed });
+        return NextResponse.json({ result: JSON.parse(cleaned) });
       } catch {
         return NextResponse.json({ result: rawText, raw: true });
       }
     }
 
-    // ── 수정 모드: Claude만 사용 ──────────────────────────────────
+    // ── 수정 모드: Gemini 사용 ─────────────────────────────────────
     const editPrompt = `
 너는 이러닝 스토리보드 편집 AI다.
 사용자 요청에 따라 현재 슬라이드를 수정하고 JSON으로만 응답해.
@@ -198,23 +188,24 @@ ${JSON.stringify(slideContext, null, 2)}
   "narration": "수정된 나레이션 (150~200자, 구어체, #큐 포함)"
 }`;
 
-    const res = await fetch("https://api.anthropic.com/v1/messages", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "x-api-key": process.env.ANTHROPIC_API_KEY ?? "",
-        "anthropic-version": "2023-06-01",
-      },
-      body: JSON.stringify({
-        model: "claude-sonnet-4-6",
-        max_tokens: 2000,
-        system: "이러닝 스토리보드 편집 AI. JSON만 반환.",
-        messages: [{ role: "user", content: editPrompt }],
-      }),
-    });
+    const res = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${process.env.GOOGLE_AI_API_KEY}`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          systemInstruction: { parts: [{ text: "이러닝 스토리보드 편집 AI. JSON만 반환." }] },
+          contents: [{ parts: [{ text: editPrompt }] }],
+          generationConfig: {
+            temperature: 0.3,
+            maxOutputTokens: 2048,
+          },
+        }),
+      }
+    );
 
     const data = await res.json();
-    const rawText = data.content?.[0]?.text ?? "";
+    const rawText = data.candidates?.[0]?.content?.parts?.[0]?.text ?? "";
     const cleaned = rawText.replace(/```json\s*/gi, "").replace(/```\s*/gi, "").trim();
 
     try {
