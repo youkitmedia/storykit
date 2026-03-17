@@ -1,16 +1,16 @@
 import { NextRequest } from "next/server";
 
 // ╔══════════════════════════════════════════════════════════════════╗
-// ║  StoryKit API Route — Dual Model + Streaming                    ║
+// ║  StoryKit API Route                                             ║
 // ║  ① Gemini 2.5 Flash  : 스토리보드 JSON 생성 / 슬라이드 편집     ║
-// ║  ② Nano Banana 2     : 슬라이드 배경 이미지 생성 (선택적)        ║
+// ║  ② Nano Banana 2     : 슬라이드 전체를 인포그래픽 이미지로 생성  ║
 // ╚══════════════════════════════════════════════════════════════════╝
 
-export const maxDuration = 60; // Hobby 최대 60초
+export const maxDuration = 60;
 
 const MODELS = {
   text:  "gemini-2.5-flash",
-  image: "gemini-3.1-flash-image-preview",
+  image: "gemini-3.1-flash-image-preview", // Nano Banana 2
 } as const;
 
 const API_BASE = "https://generativelanguage.googleapis.com/v1beta/models";
@@ -20,39 +20,22 @@ const endpoint = (model: string) =>
 
 // ── 타입 ──────────────────────────────────────────────
 interface SlideElement {
-  id: string;
-  order: number;
-  type: string;
-  text?: string;
-  items?: string[];
-  style?: string;
-  active?: number;
-  cue?: number; // ★ 핵심: 나레이션 #큐 번호와 1:1 매칭
+  id: string; order: number; type: string;
+  text?: string; items?: string[];
+  cue?: number; style?: string; active?: number;
 }
-
 interface Slide {
-  title: string;
-  subtitle?: string;
-  elements: SlideElement[];
+  title: string; subtitle?: string;
+  layout: string; elements: SlideElement[];
 }
-
 interface Page {
-  page_id: string;
-  section: string;
-  sub_section: string;
-  layout: string;
-  status: string;
-  slide: Slide;
-  screen_desc: string;
-  narration: string;
-  background_image?: string;
-  image_prompt?: string;
+  page_id: string; section: string; sub_section: string;
+  layout: string; status: string;
+  slide: Slide; screen_desc: string; narration: string;
+  background_image?: string; image_prompt?: string;
 }
-
 interface Storyboard {
-  course_title: string;
-  week: string;
-  chapter: string;
+  course_title: string; week: string; chapter: string;
   index: { section: string; items: string[] }[];
   pages: Page[];
 }
@@ -62,142 +45,298 @@ function sseEvent(type: string, payload: unknown): string {
   return `event: ${type}\ndata: ${JSON.stringify(payload)}\n\n`;
 }
 
+// ══════════════════════════════════════════════════════
+// 슬라이드 전체 이미지 프롬프트 생성기
+// 레이아웃 타입별로 실제 슬라이드 구성을 묘사
+// ══════════════════════════════════════════════════════
+function buildSlideImagePrompt(page: Page): string {
+  const el      = page.slide.elements ?? [];
+  const title   = page.slide.title ?? "";
+  const subtitle = page.slide.subtitle ?? "";
+  const layout  = page.layout ?? page.slide.layout ?? "";
+  const narr    = page.narration ?? "";
+
+  // 나레이션에서 큐 제거하고 하단 텍스트용으로 정리
+  const narrClean = narr.replace(/#\d+\s*/g, "").trim().slice(0, 120);
+
+  // element별 텍스트 추출
+  const heading   = el.find(e => e.type === "heading")?.text ?? title;
+  const subtitleEl = el.find(e => e.type === "subtitle_text")?.text ?? subtitle;
+  const emphasis  = el.find(e => e.type === "emphasis")?.text ?? "";
+  const question  = el.find(e => e.type === "question")?.text ?? "";
+  const bullets   = el.find(e => e.type === "bullets")?.items ?? [];
+  const circles   = el.find(e => e.type === "circles")?.items ?? [];
+  const tabs      = el.find(e => e.type === "tabs")?.items ?? [];
+  const labels    = el.find(e => e.type === "label_list")?.items ?? [];
+  const speech    = el.find(e => e.type === "speech")?.text ?? "";
+
+  // ── 공통 스타일 지시 ────────────────────────────────
+  const BASE = [
+    "Korean e-learning slide, 16:9 ratio, 1920x1080px",
+    "white or very light gray background",
+    "clean professional infographic style",
+    "Noto Sans KR font, Korean text rendered accurately",
+    "thin grid pattern background (light gray, subtle)",
+    "instructor silhouette (simple gray human shape) on right side",
+    "small 'StoryKit' watermark bottom-right corner",
+  ].join(", ");
+
+  // ── 나레이션 하단 박스 ──────────────────────────────
+  const NARR_BOX = narrClean
+    ? `dark navy narration bar at very bottom with white small text: "${narrClean}"`
+    : "";
+
+  // ── 레이아웃별 프롬프트 ─────────────────────────────
+
+  // A. title_intro — 타이틀 + 학습목표
+  if (layout === "title_intro") {
+    const bulletItems = bullets.length > 0
+      ? bullets.map((b, i) => `bullet point ${i + 1}: "${b}"`).join(", ")
+      : "";
+    return [
+      BASE,
+      `LAYOUT: title slide with large bold Korean title "${heading}" on left side`,
+      subtitle ? `subtitle badge with dark background: "${subtitle}"` : "",
+      subtitleEl ? `subtitle text: "${subtitleEl}"` : "",
+      bulletItems
+        ? `learning objectives box (dark background, white text): ${bulletItems}`
+        : "",
+      `right side: abstract geometric shapes (circles, rectangles) in black and red accent`,
+      `top-left area has the main title text block`,
+      NARR_BOX,
+    ].filter(Boolean).join(". ");
+  }
+
+  // B. split_two — 좌우 2분할 원형
+  if (layout === "split_two") {
+    const [leftLabel, rightLabel] = circles.length >= 2
+      ? [circles[0], circles[1]]
+      : ["개념 A", "개념 B"];
+    return [
+      BASE,
+      `LAYOUT: split two-column layout`,
+      `bold Korean title at top-left: "${heading}"`,
+      subtitle ? `subtitle badge below title: "${subtitle}"` : "",
+      `left half: large circle with thick black border (white inside), bold text inside: "${leftLabel}"`,
+      `right half: large circle with gray fill, bold text inside: "${rightLabel}"`,
+      `between the two circles: large bold blue right-pointing arrow (→)`,
+      `cue markers: "#1" red badge on left circle, "#2" red badge on right circle`,
+      NARR_BOX,
+    ].filter(Boolean).join(". ");
+  }
+
+  // C. concept_circles — 원형 프로세스
+  if (layout === "concept_circles" || layout === "concept_bullets") {
+    const circleList = circles.length > 0
+      ? circles.map((c, i) => `circle ${i + 1} (${["blue", "green", "orange", "purple"][i % 4]} fill): "${c}"`).join(", ")
+      : "";
+    return [
+      BASE,
+      `LAYOUT: circular process diagram`,
+      `bold title at top: "${heading}"`,
+      subtitle ? `subtitle: "${subtitle}"` : "",
+      circleList ? `row of connected circles with arrows between them: ${circleList}` : "",
+      emphasis ? `conclusion emphasis box at bottom (yellow/amber background): "${emphasis}"` : "",
+      `red cue badge "#1" on first circle`,
+      NARR_BOX,
+    ].filter(Boolean).join(". ");
+  }
+
+  // D. tabs_sequential — 번호탭 순차
+  if (layout === "tabs_sequential") {
+    const tabItems = tabs.length > 0
+      ? tabs.map((t, i) => `tab ${i + 1}: "${t}"`).join(", ")
+      : bullets.map((b, i) => `tab ${i + 1}: "${b}"`).join(", ");
+    return [
+      BASE,
+      `LAYOUT: sequential numbered tabs`,
+      `bold title at top-left: "${heading}"`,
+      subtitle ? `subtitle in small text: "${subtitle}"` : "",
+      emphasis ? `large emphasis banner (cyan/blue background, white bold text): "${emphasis}"` : "",
+      tabItems
+        ? `three vertical card boxes below: ${tabItems}, each with a numbered circle at top`
+        : "",
+      `cue markers: red "#1" on emphasis banner, "#2" "#3" "#4" on each tab card`,
+      NARR_BOX,
+    ].filter(Boolean).join(". ");
+  }
+
+  // E. emphasis_definition — 핵심 정의 강조
+  if (layout === "emphasis_definition" || layout === "image_caption") {
+    const bulletList = bullets.length > 0
+      ? bullets.map((b, i) => `row ${i + 1}: "${b}"`).join(", ")
+      : "";
+    return [
+      BASE,
+      `LAYOUT: definition emphasis with side content`,
+      `title at top: "${heading}"`,
+      subtitle ? `subtitle: "${subtitle}"` : "",
+      emphasis
+        ? `large emphasis box (amber/yellow left border, light yellow background): bold text "${emphasis}"`
+        : "",
+      bulletList
+        ? `numbered bullet rows (white cards with slight shadow): ${bulletList}`
+        : "",
+      `red cue badge "#1" on emphasis box, "#2" on bullet list`,
+      NARR_BOX,
+    ].filter(Boolean).join(". ");
+  }
+
+  // F. label_list — 연번 라벨 목록
+  if (layout === "label_list") {
+    const labelItems = labels.length > 0
+      ? labels.map((l, i) => `label ${i + 1}: "${l}"`).join(", ")
+      : bullets.map((b, i) => `label ${i + 1}: "${b}"`).join(", ");
+    return [
+      BASE,
+      `LAYOUT: numbered label list`,
+      `bold title at top: "${heading}"`,
+      subtitle ? `subtitle: "${subtitle}"` : "",
+      labelItems
+        ? `four horizontal label buttons in a column: ${labelItems}. First label highlighted in green, others gray`
+        : "",
+      `red cue badge "#1" on first label`,
+      NARR_BOX,
+    ].filter(Boolean).join(". ");
+  }
+
+  // G. speech_bubble — 말풍선 자문자답
+  if (layout === "speech_bubble" || layout === "question_check") {
+    return [
+      BASE,
+      `LAYOUT: speech bubble Q&A`,
+      `title at top: "${heading}"`,
+      subtitle ? `subtitle: "${subtitle}"` : "",
+      question
+        ? `large question speech bubble (beige/white background): bold text "${question}"`
+        : "",
+      speech
+        ? `answer speech bubble (green background, white text): "${speech}"`
+        : emphasis
+          ? `answer speech bubble (green background, white text): "${emphasis}"`
+          : "",
+      `red cue badge "#1" on question bubble, "#2" on answer bubble`,
+      NARR_BOX,
+    ].filter(Boolean).join(". ");
+  }
+
+  // H. instructor_speech — 강사 강조
+  if (layout === "instructor_speech") {
+    return [
+      BASE,
+      `LAYOUT: instructor speech full-width`,
+      `very large italic bold text in center: "${heading}"`,
+      subtitle ? `subtitle badge: "${subtitle}"` : "",
+      speech ? `speech bubble box (white, rounded): "${speech}"` : "",
+      emphasis ? `underlined emphasis text: "${emphasis}"` : "",
+      `instructor silhouette larger and more prominent on right`,
+      `red cue badge "#1" on main text`,
+      NARR_BOX,
+    ].filter(Boolean).join(". ");
+  }
+
+  // I. summary_dark — 다크 정리 슬라이드
+  if (layout === "summary_dark") {
+    const summaryItems = bullets.length > 0
+      ? bullets.map((b, i) => `summary row ${i + 1} (beige card): "${b}"`).join(", ")
+      : "";
+    return [
+      BASE,
+      `LAYOUT: dark summary slide`,
+      `DARK BACKGROUND: deep dark green (#1a3d2b) or very dark navy`,
+      `white bold title at top-left: "${heading}"`,
+      subtitle ? `light green subtitle: "${subtitle}"` : "",
+      summaryItems
+        ? `three beige/cream colored summary cards stacked vertically: ${summaryItems}`
+        : "",
+      `red "#1" "#2" "#3" cue badges on each card`,
+      `circular instructor avatar (outline circle) on right side`,
+      `overall dark professional closing slide feel`,
+      NARR_BOX,
+    ].filter(Boolean).join(". ");
+  }
+
+  // ── Fallback — 기본 프롬프트 ──────────────────────
+  const allText = el.map(e => e.text ?? e.items?.join(", ") ?? "").filter(Boolean).join(" | ");
+  return [
+    BASE,
+    `LAYOUT: general educational slide`,
+    `title: "${heading}"`,
+    subtitle ? `subtitle: "${subtitle}"` : "",
+    allText ? `content elements: ${allText.slice(0, 200)}` : "",
+    NARR_BOX,
+  ].filter(Boolean).join(". ");
+}
+
 // ── 시스템 프롬프트 ───────────────────────────────────
 const STORYBOARD_SYSTEM_PROMPT = `
 너는 10년 이상 경력의 이러닝 교수설계자다.
 ADDIE 모델과 Gagne의 9단계 교수 이론에 기반하여 스토리보드를 작성한다.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-## 가장 중요한 규칙: 나레이션 #큐와 element cue 1:1 매칭
+## 핵심 규칙: 나레이션 #큐 ↔ element cue 1:1 매칭
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-나레이션에 #0, #1, #2, #3 큐를 삽입하고,
-각 element에 반드시 cue 필드를 추가한다.
-나레이션의 #N이 등장할 때 cue:N인 element가 화면에 나타난다.
-
-올바른 예시:
-  narration: "#0 화면 활성화. #1 타이포그래피는 활자를 가지고 디자인하는 기술이에요. #2 여기서 핵심 단어는 바로 기술이랍니다."
-  elements:
-    { type:"emphasis", cue:1, text:"타이포그래피는 활자를 가지고 디자인하는 기술을 말한다." }
-    { type:"bullets",  cue:2, items:["기술: 숙련·원리·반복"] }
-
-잘못된 예시 (절대 금지):
-  elements에 cue 필드 없음 → 화면과 나레이션 타이밍 불일치
+나레이션: "#0 화면 등장. #1 첫 번째 요소 설명. #2 두 번째 요소 설명."
+elements:  { type:"emphasis", cue:1, text:"..." }
+           { type:"bullets",  cue:2, items:[...] }
 
 큐 규칙:
-  #0 = 장면 전환/강사 등장 (cue:0 element 없어도 됨)
-  #1~#5 = 각 element 등장 타이밍
-  문장 앞에만 위치 ("#1 설명..." O / "설명 #1..." X)
-  연속 큐 금지 ("#1 #2 두 가지" X)
+  #0 = 장면전환/강사 등장
+  #1~#5 = 화면 요소 등장 순서
+  문장 앞에만 위치 / 연속 큐 금지
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 ## 차시 구성 5단계
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-1단계 [도입]       layout: title_intro        (학습목표, 동기유발)
-2단계 [전개-개념]  layout: concept_circles    (병렬 개념 3~4개)
-                   또는   tabs_sequential      (순차 3개)
-3단계 [전개-심화]  layout: emphasis_definition (핵심 정의 강조)
-                   또는   image_caption        (이미지+설명)
-4단계 [확인]       layout: speech_bubble      (질문 유도)
-5단계 [정리]       layout: summary_dark       (핵심 3가지 요약)
+1단계 [도입]       layout: title_intro
+2단계 [전개-개념]  layout: concept_circles / tabs_sequential
+3단계 [전개-심화]  layout: emphasis_definition / image_caption
+4단계 [확인]       layout: speech_bubble / question_check
+5단계 [정리]       layout: summary_dark
 
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-## 레이아웃 타입 8종
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-concept_circles  — 병렬 개념 3~4개 원형
-tabs_sequential  — 번호탭 순차 강조
-speech_bubble    — 질문-답변 말풍선
-label_list       — 4개 이하 라벨 목록
-instructor_speech — 강사 강조 메시지
-image_caption    — 이미지+번호+설명
-split_two        — 좌우 2개 대비
-summary_dark     — 다크 배경 정리
+레이아웃 타입 8종:
+concept_circles / tabs_sequential / speech_bubble / label_list /
+instructor_speech / image_caption / split_two / summary_dark
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 ## 나레이션 규칙
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-- 150~200자, 구어체 (~이에요, ~이랍니다, ~해요)
-- #0~#5 큐 삽입 (문장 앞, 연속 금지)
-- 마지막 문장: 다음 슬라이드 연결어
-- 도입: "이번 시간에는 ~을 살펴보겠습니다"
-- 정리: "정리하겠습니다"로 시작
+150~200자, 구어체, #0~#5 큐 포함, 마지막 문장은 연결어
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-## element type 규칙
+## element type
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-heading(15자↓, 필수1개, cue 생략가능)
-subtitle_text(보조설명, 한줄)
-circles(items: 2~4자 핵심어)
-bullets(items: 10자↓)
-emphasis(30자↓ 1문장, 핵심 정의)
-question("~인가요?" / "~일까요?")
-tabs(items: 탭 라벨)
-label_list(items: 라벨 텍스트)
-speech(대화체 문장)
+heading(15자↓필수) subtitle_text emphasis(30자↓)
+circles(4자↓) bullets(10자↓) question tabs label_list speech
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-## 품질 체크리스트
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-- 모든 element에 cue 필드 포함 (heading 제외 가능)
-- 나레이션의 #N 개수 = cue가 있는 element 수
-- 도입/정리 슬라이드 각 1개 이상
-- 나레이션 150자 이상, #1 큐 포함
-- elements 최소 2개, heading 필수
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-## 출력 JSON 스키마 (순수 JSON만)
+## 출력 JSON (순수 JSON만)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 {
-  "course_title": "과정명",
-  "week": "2주차",
-  "chapter": "1차시",
-  "index": [{ "section": "섹션명", "items": ["항목1","항목2"] }],
-  "pages": [
-    {
-      "page_id": "02_01_01_01",
-      "section": "섹션명",
-      "sub_section": "소섹션명",
-      "layout": "title_intro",
-      "status": "review",
-      "slide": {
-        "title": "슬라이드 제목 (15자 이내)",
-        "subtitle": "서브 제목",
-        "elements": [
-          { "id":"el-1", "order":1, "type":"heading", "text":"핵심 제목" },
-          { "id":"el-2", "order":2, "type":"emphasis", "cue":1, "text":"핵심 정의 문장" },
-          { "id":"el-3", "order":3, "type":"bullets",  "cue":2, "items":["항목1","항목2"] }
-        ]
-      },
-      "screen_desc": "화면 구성 설명",
-      "narration": "#0 화면 활성화. #1 나레이션 첫 번째 요소 설명. #2 두 번째 요소 설명. 다음 슬라이드 연결어."
-    }
-  ]
+  "course_title":"","week":"","chapter":"",
+  "index":[{"section":"","items":[]}],
+  "pages":[{
+    "page_id":"02_01_01_01",
+    "section":"","sub_section":"",
+    "layout":"title_intro","status":"review",
+    "slide":{
+      "title":"","subtitle":"",
+      "elements":[
+        {"id":"el-1","order":1,"type":"heading","text":""},
+        {"id":"el-2","order":2,"type":"emphasis","cue":1,"text":""},
+        {"id":"el-3","order":3,"type":"bullets","cue":2,"items":[]}
+      ]
+    },
+    "screen_desc":"",
+    "narration":"#0 화면 활성화. #1 설명. #2 설명. 다음 연결어."
+  }]
 }
 `.trim();
 
 const EDIT_SYSTEM_PROMPT = `
-너는 이러닝 스토리보드 편집 전문 AI다.
-나레이션의 #큐 번호와 element의 cue 필드가 반드시 1:1 매칭되어야 한다.
+이러닝 스토리보드 편집 AI. 나레이션 #큐 ↔ element cue 1:1 매칭 유지.
 JSON만 반환:
-{
-  "summary": "수정 내용 한 줄 요약",
-  "slide": { ...수정된 슬라이드 (모든 element에 cue 포함)... },
-  "narration": "수정된 나레이션 (#큐와 cue가 정확히 매칭)"
-}
-`.trim();
-
-const IMAGE_PROMPT_SYSTEM = `
-이러닝 슬라이드 배경 이미지용 Nano Banana 2 영문 프롬프트 생성.
-16:9 교육용 배경, 텍스트 여백 확보 (좌측 1/3).
-레이아웃별 스타일:
-  title_intro→bright geometric clean
-  concept_circles→connected circles flow abstract
-  tabs_sequential→horizontal step gradient
-  speech_bubble→soft dialogue gradient
-  split_two→contrasting left-right color
-  summary_dark→dark professional closing
-  image_caption→realistic educational photo center
-  instructor_speech→warm motivational
-50~80단어 영어. JSON만: { "prompt":"..." }
+{"summary":"한 줄 요약","slide":{...cue 포함...},"narration":"...#큐 매칭..."}
 `.trim();
 
 // ── 유틸 ──────────────────────────────────────────────
@@ -233,7 +372,7 @@ async function callGeminiText({
   return data.candidates?.[0]?.content?.parts?.[0]?.text ?? "";
 }
 
-// ── Nano Banana 2 이미지 호출 ─────────────────────────
+// ── Nano Banana 2 이미지 생성 ─────────────────────────
 async function callNanoBanana2(prompt: string): Promise<string> {
   const res = await fetch(endpoint(MODELS.image), {
     method: "POST",
@@ -250,7 +389,7 @@ async function callNanoBanana2(prompt: string): Promise<string> {
   const data = await res.json();
   type Part = { text?: string; inlineData?: { data: string } };
   const parts: Part[] = data.candidates?.[0]?.content?.parts ?? [];
-  return parts.find((p) => p.inlineData)?.inlineData?.data ?? "";
+  return parts.find(p => p.inlineData)?.inlineData?.data ?? "";
 }
 
 // ── 스토리보드 생성 ───────────────────────────────────
@@ -258,7 +397,7 @@ async function generateStoryboard(pdfText: string): Promise<Storyboard | null> {
   const raw = await callGeminiText({
     systemPrompt: STORYBOARD_SYSTEM_PROMPT,
     userText: `아래 원고를 분석하여 교수설계 5단계에 따라 스토리보드 JSON을 생성해주세요.
-모든 element에 반드시 cue 필드를 포함하고, 나레이션의 #큐 번호와 정확히 매칭하세요.
+모든 element에 cue 필드 포함, 나레이션 #큐와 정확히 매칭하세요.
 
 원고:
 ${pdfText.substring(0, 12000)}`,
@@ -278,19 +417,15 @@ async function editSlide(message: string, slideContext: unknown): Promise<string
   });
 }
 
-// ── 슬라이드 이미지 생성 ──────────────────────────────
+// ══════════════════════════════════════════════════════
+// ★ 슬라이드 전체 이미지 생성
+//   buildSlideImagePrompt()로 레이아웃별 상세 프롬프트 생성
+//   → Nano Banana 2가 슬라이드 전체를 인포그래픽으로 그림
+// ══════════════════════════════════════════════════════
 async function generateSlideImage(page: Page): Promise<{ base64: string; prompt: string }> {
-  const rawPrompt = await callGeminiText({
-    systemPrompt: IMAGE_PROMPT_SYSTEM,
-    userText: `제목:${page.slide.title} / 레이아웃:${page.layout} / 섹션:${page.section} / 요소:${
-      page.slide.elements.map((e) => e.text ?? e.items?.join(",") ?? "").join("|")
-    }`,
-    temperature: 0.7,
-    maxOutputTokens: 200,
-  });
-  const promptData = safeParseJson<{ prompt: string }>(rawPrompt);
-  const imagePrompt = promptData?.prompt ??
-    `Professional educational slide background for "${page.slide.title}", 16:9, clean modern, text space left third`;
+  const imagePrompt = buildSlideImagePrompt(page);
+  console.log(`[이미지 생성] ${page.page_id} / layout: ${page.layout}`);
+  console.log(`[프롬프트] ${imagePrompt.slice(0, 200)}...`);
   const base64 = await callNanoBanana2(imagePrompt);
   return { base64, prompt: imagePrompt };
 }
@@ -310,7 +445,7 @@ export async function POST(req: NextRequest) {
         const resolvedMode: string =
           mode ?? (pdfText ? "generate" : message ? "edit" : "unknown");
 
-        // ── generate ────────────────────────────────────
+        // ── generate ──────────────────────────────────
         if (resolvedMode === "generate") {
           if (!pdfText) { send("error", { message: "pdfText 필요" }); controller.close(); return; }
           send("progress", { message: "원고 분석 중..." });
@@ -323,24 +458,25 @@ export async function POST(req: NextRequest) {
           return;
         }
 
-        // ── generate_with_images ─────────────────────────
+        // ── generate_with_images ───────────────────────
         if (resolvedMode === "generate_with_images") {
           if (!pdfText) { send("error", { message: "pdfText 필요" }); controller.close(); return; }
           send("progress", { message: "원고 분석 중..." });
           const board = await generateStoryboard(pdfText);
           if (!board) { send("error", { message: "스토리보드 생성 실패" }); controller.close(); return; }
-          send("progress", { message: `스토리보드 완성 (${board.pages.length}슬라이드). 이미지 생성 시작...` });
+          send("progress", { message: `스토리보드 완성. 슬라이드 이미지 생성 시작...` });
 
           const updatedPages: Page[] = [];
           for (let i = 0; i < board.pages.length; i++) {
             const page = board.pages[i];
             const shouldGenerate = !targetPageIds || targetPageIds.includes(page.page_id);
             if (shouldGenerate) {
-              send("progress", { message: `이미지 생성 중 (${i + 1}/${board.pages.length}): ${page.slide.title}` });
+              send("progress", { message: `슬라이드 이미지 생성 중 (${i + 1}/${board.pages.length}): ${page.slide.title}` });
               try {
                 const { base64, prompt } = await generateSlideImage(page);
                 updatedPages.push({ ...page, background_image: base64, image_prompt: prompt });
-              } catch {
+              } catch (err) {
+                console.warn(`[이미지 실패] ${page.page_id}:`, err);
                 updatedPages.push(page);
               }
             } else {
@@ -353,10 +489,10 @@ export async function POST(req: NextRequest) {
           return;
         }
 
-        // ── image ────────────────────────────────────────
+        // ── image (단일 슬라이드 or 전체) ─────────────
         if (resolvedMode === "image") {
           if (slideContext) {
-            send("progress", { message: "이미지 생성 중..." });
+            send("progress", { message: "슬라이드 이미지 생성 중..." });
             const { base64, prompt } = await generateSlideImage(slideContext as Page);
             send("result", { data: { background_image: base64, image_prompt: prompt } });
             send("done", {});
@@ -389,7 +525,7 @@ export async function POST(req: NextRequest) {
           return;
         }
 
-        // ── edit ─────────────────────────────────────────
+        // ── edit ──────────────────────────────────────
         if (resolvedMode === "edit") {
           if (!message) { send("error", { message: "message 필요" }); controller.close(); return; }
           send("progress", { message: "슬라이드 수정 중..." });
@@ -401,7 +537,7 @@ export async function POST(req: NextRequest) {
           return;
         }
 
-        send("error", { message: "알 수 없는 mode" });
+        send("error", { message: "알 수 없는 mode", validModes: ["generate","generate_with_images","image","edit"] });
         controller.close();
 
       } catch (err) {
@@ -416,9 +552,9 @@ export async function POST(req: NextRequest) {
 
   return new Response(stream, {
     headers: {
-      "Content-Type": "text/event-stream",
+      "Content-Type":  "text/event-stream",
       "Cache-Control": "no-cache",
-      "Connection": "keep-alive",
+      "Connection":    "keep-alive",
     },
   });
 }

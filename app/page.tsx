@@ -919,6 +919,7 @@ function EditorScreen({ initialPages,initialIndex,courseTitle }: {
   const [aiPanelWidth,setAiPanelWidth] = useState(280);
   const [isDragging,setIsDragging]   = useState(false);
   const [generatingImageId,setGeneratingImageId] = useState<number|null>(null); // ★
+  const [isExportingPptx,setIsExportingPptx]   = useState(false);
   const containerRef  = useRef<HTMLDivElement>(null);
   const slideAreaRef  = useRef<HTMLDivElement>(null);
   const [slideWidth,setSlideWidth] = useState(800);
@@ -1014,6 +1015,38 @@ function EditorScreen({ initialPages,initialIndex,courseTitle }: {
     if(win){win.document.write(html);win.document.close();}
   };
 
+  const exportPptx = async () => {
+    setIsExportingPptx(true);
+    try {
+      const res = await fetch("/api/export-pptx", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          pages,
+          courseTitle,
+          week: pages[0]?.week ?? "",
+        }),
+      });
+      if (!res.ok) {
+        const err = await res.json();
+        alert(`PPTX 생성 실패: ${err.detail ?? err.error}`);
+        return;
+      }
+      const blob = await res.blob();
+      const url  = URL.createObjectURL(blob);
+      const a    = document.createElement("a");
+      a.href     = url;
+      a.download = `${courseTitle ?? "storyboard"}.pptx`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      alert("PPTX 내보내기 중 오류가 발생했습니다.");
+      console.error(e);
+    } finally {
+      setIsExportingPptx(false);
+    }
+  };
+
   const handleMouseDown=useCallback(()=>setIsDragging(true),[]);
   const handleMouseMove=useCallback((e:MouseEvent)=>{
     if(!isDragging||!containerRef.current) return;
@@ -1071,6 +1104,11 @@ function EditorScreen({ initialPages,initialIndex,courseTitle }: {
               </Button>
             ))}
           </div>
+          <Button size="sm" variant="outline" className="text-xs font-bold gap-1" onClick={exportPptx} disabled={isExportingPptx}>
+            {isExportingPptx
+              ? <><Loader size={12} className="animate-spin"/>PPTX 생성 중...</>
+              : <><Download size={12}/>PPTX 다운로드</>}
+          </Button>
           <Button size="sm" className="text-xs font-bold gap-1" onClick={exportPDF}>
             <Download size={12}/>PDF 내보내기
           </Button>
