@@ -276,9 +276,13 @@ function GeneratingScreen({
         const res = await fetch("/api/ai-edit", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ pdfText: pdfText || "", fileName }),
-        });
-        const data = await res.json();
+          body: JSON.stringify({ 
+           pdfText: pdfText || "", 
+           fileName,
+           useGemini: true,   // ← 이 줄만 추가
+        }),
+      });
+const data = await res.json();
 
         clearInterval(iv);
         setProgress(98);

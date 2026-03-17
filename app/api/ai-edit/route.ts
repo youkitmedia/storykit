@@ -1,98 +1,97 @@
 import { NextRequest, NextResponse } from "next/server";
 
-// ─── 스킬 SKILL.md 이식 ─────────────────────────────────────────
-const SKILL_SYSTEM_PROMPT = `
-너는 10년 이상 경력의 이러닝 교수설계자다.
-대학 강의, 기업 교육, 공공기관 이러닝 콘텐츠를 제작해왔으며
-ADDIE 모델과 Gagne의 9단계 교수 이론에 기반해 스토리보드를 작성한다.
+// ─── Gemini로 원고 구조 분석 ──────────────────────────────────────
+async function analyzeWithGemini(pdfText: string): Promise<string> {
+  const res = await fetch(
+    `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${process.env.GOOGLE_AI_API_KEY}`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        contents: [
+          {
+            parts: [
+              {
+                text: `다음 이러닝 원고를 분석해서 아래 JSON 형식으로만 반환해줘.
+다른 텍스트 없이 { 로 시작해서 } 로 끝나는 순수 JSON만 출력.
 
-## 핵심 원칙
-- 1슬라이드 = 1핵심개념 (인지 부하 최소화)
-- 나레이션과 화면 요소는 반드시 연동 (멀티미디어 학습 이론)
-- 텍스트는 키워드 중심, 문장 금지 (bullets는 10자 이내)
-- 시각적 위계: 크기·색상·배치로 중요도 표현
-
-## 차시 구성 5단계 (반드시 준수)
-1단계 [도입]      layout: title_intro       학습목표 제시, 동기유발 질문
-2단계 [전개-개념] layout: concept_circles   또는 concept_bullets
-3단계 [전개-심화] layout: emphasis_definition 핵심 정의 강조, 예시 제시
-4단계 [확인]      layout: question_check    중간 점검 질문 1개
-5단계 [정리]      layout: summary_dark      핵심 3가지 요약
-
-## 레이아웃 타입 8종
-- concept_circles:     병렬 개념 3~4개, 순환/프로세스 구조
-- tabs_sequential:     번호탭 순차 강조 + 블릿 설명박스
-- speech_bubble:       자문자답, 교수-학생 대화, 질문 유도
-- label_list:          연번 라벨박스 순차 활성화 (4개 이하)
-- instructor_speech:   강사 전면 + 큰 말풍선 텍스트
-- image_caption:       이미지/영상 + 번호원 + 설명박스
-- split_two:           배경 좌우 분할 + 병렬 대형 원형 2개
-- summary_dark:        다크 배경 + 베이지 콘텐츠박스 + 캐릭터
-
-## 나레이션 큐 규칙 (필수)
-- #0 = 장면 전환 또는 섹션 시작
-- #1~#5 = 해당 번호의 화면 요소 등장 타이밍
-- 나레이션 길이: 150~200자 (초당 6자, 약 25~33초)
-- 문체: 구어체 강의 말투 (문어체 금지)
-- 마무리: 다음 슬라이드 연결어로 끝낼 것
-
-올바른 나레이션 예시:
-"#1 사회적 의사소통은 언어적·비언어적 표현으로 타인과 상호작용하는 능력이에요.
-#2 이는 크게 세 가지 어려움으로 나타나는데요, 그렇다면 자세히 살펴볼까요?"
-
-## element type 규칙
-- heading:      슬라이드 핵심 제목, 15자 이내, 항상 1개
-- subtitle_text: 보조 설명 한 줄
-- circles:      items는 2~4자 핵심어만
-- bullets:      items는 "키워드: 설명" 형태, 10자 이내
-- emphasis:     핵심 정의 1문장, 30자 이내
-- question:     "~인가요?" / "~일까요?" 형태
-- tabs:         items는 탭 라벨 배열, active 인덱스 포함
-- label_list:   items는 라벨 텍스트 배열, active 인덱스 포함
-- speech:       대화체 문장
-
-## 품질 체크리스트 (생성 후 자동 검증)
-- 차시당 도입 슬라이드 1개 이상
-- 차시당 정리 슬라이드 1개 이상
-- 나레이션 150자 이상 (전 페이지)
-- 나레이션에 #1 큐 포함 (전 페이지)
-- elements 최소 2개 이상
-- heading 타입 반드시 포함
-`;
-
-// ─── 생성 모드 프롬프트 ──────────────────────────────────────────
-const generatePrompt = (pdfText: string) => `
-${SKILL_SYSTEM_PROMPT}
-
-## 원고 분석 절차
-1. 메타 추출: 과정명, 주차, 차시, 담당 교수 자동 인식
-2. 섹션 분리: 원고의 소제목/번호 구조로 INDEX 자동 구성
-3. 콘텐츠 분류: 각 섹션을 5단계 중 어느 단계인지 판단
-4. 레이아웃 선택: 콘텐츠 성격에 따라 8종 중 최적 타입 선택
-5. 나레이션 추출: 원고 문장을 구어체로 변환, 큐 삽입
-6. 품질 검증: 체크리스트 자동 확인 후 수정
-
-## 출력 규칙
-- { } 로 시작하고 끝나는 순수 JSON만 출력
-- 코드블록(\`\`\`), 설명, 주석 절대 금지
-- 반드시 5~15개 페이지 생성, 빈 배열 금지
-- page_id 형식: "02_01_03_01" (과정_차시_섹션_페이지)
-
-다음 원고를 분석하여 스토리보드를 생성해주세요:
-
-${pdfText.substring(0, 4000)}
-
-출력 JSON 형식:
 {
   "course_title": "과정명",
-  "week": "1주차",
-  "chapter": "1차시",
-  "index": [
+  "week": "주차명",
+  "chapter": "차시명",
+  "sections": [
     {
-      "section": "섹션명",
-      "items": ["소제목1", "소제목2", "정리하기", "아웃트로"]
+      "section_id": "01",
+      "section_name": "섹션명",
+      "section_type": "intro | concept | emphasis | question | summary",
+      "key_concepts": ["핵심개념1", "핵심개념2"],
+      "keywords": ["강조키워드1", "강조키워드2"],
+      "content_summary": "이 섹션의 핵심 내용 요약 (2~3문장)",
+      "recommended_layout": "title_intro | concept_circles | tabs_sequential | speech_bubble | label_list | instructor_speech | image_caption | split_two | summary_dark",
+      "image_keyword": "게티이미지 검색용 영문 키워드",
+      "narration_source": "원고에서 나레이션으로 쓸 핵심 문장들 추출"
     }
   ],
+  "index": ["섹션1명", "섹션2명", "섹션3명"]
+}
+
+원고:
+${pdfText.substring(0, 8000)}`,
+              },
+            ],
+          },
+        ],
+        generationConfig: {
+          temperature: 0.2,
+          maxOutputTokens: 4096,
+        },
+      }),
+    }
+  );
+
+  if (!res.ok) throw new Error(`Gemini API 오류: ${res.status}`);
+  const data = await res.json();
+  return data.candidates?.[0]?.content?.parts?.[0]?.text ?? "";
+}
+
+// ─── Claude로 스토리보드 생성 ─────────────────────────────────────
+async function generateWithClaude(
+  geminiAnalysis: string,
+  pdfText: string
+): Promise<string> {
+  const systemPrompt = `
+너는 10년 이상 경력의 이러닝 교수설계자다.
+아래 원고 분석 결과를 바탕으로 교수설계 원칙에 따라 슬라이드 스토리보드 JSON을 생성한다.
+
+## 교수설계 5단계 (차시별 반드시 준수)
+1단계 [도입]      layout: title_intro       학습목표 제시
+2단계 [전개-개념] layout: concept_circles 또는 tabs_sequential
+3단계 [전개-심화] layout: emphasis_definition 또는 image_caption
+4단계 [확인]      layout: speech_bubble     질문 유도
+5단계 [정리]      layout: summary_dark      핵심 요약
+
+## 나레이션 규칙
+- 구어체 필수 ("~이에요", "~랍니다")
+- 150~200자
+- #1 #2 #3 큐 삽입 (화면 요소 등장 0.5초 전)
+- 마지막 문장은 다음 슬라이드 연결어로 끝낼 것
+
+## 자막(bullets items) 규칙
+- 명사형 개조식 필수 (문장 금지)
+- 10자 이내
+- 올바른 예: "기능 중심 형태 결정"
+- 잘못된 예: "기능이 형태를 결정한다"
+
+## 출력 규칙
+- 순수 JSON만 출력 (코드블록 금지)
+- { 로 시작 } 로 끝
+
+출력 형식:
+{
+  "course_title": "과정명",
+  "week": "주차",
+  "chapter": "차시",
+  "index": [{ "section": "섹션명", "items": ["소제목1", "소제목2"] }],
   "pages": [
     {
       "page_id": "02_01_01_01",
@@ -101,106 +100,131 @@ ${pdfText.substring(0, 4000)}
       "layout": "title_intro",
       "status": "review",
       "slide": {
-        "title": "슬라이드 제목 (15자 이내)",
+        "title": "슬라이드 제목 15자 이내",
         "subtitle": "서브 제목",
         "elements": [
           { "id": "el-1", "order": 1, "type": "heading", "text": "핵심 제목" },
           { "id": "el-2", "order": 2, "type": "bullets", "items": ["항목1", "항목2"] }
         ]
       },
-      "screen_desc": "화면 구성 설명 (이미지 번호, 모션 번호 등)",
-      "narration": "#1 나레이션 텍스트 (150~200자, 구어체, 연결어로 마무리)"
+      "image_keyword": "getty image search keyword in english",
+      "emphasis_keywords": ["강조1", "강조2"],
+      "screen_desc": "(#1 Fade-in 0.5s) 요소 등장 → (#2 Fade-in 0.5s) 다음 요소",
+      "narration": "#1 나레이션 텍스트 (150~200자, 구어체)"
     }
   ]
+}`;
+
+  const userContent = `
+아래는 Gemini가 분석한 원고 구조입니다. 이를 바탕으로 스토리보드를 생성해주세요.
+
+[Gemini 분석 결과]
+${geminiAnalysis}
+
+[원본 원고 일부]
+${pdfText.substring(0, 3000)}`;
+
+  const res = await fetch("https://api.anthropic.com/v1/messages", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "x-api-key": process.env.ANTHROPIC_API_KEY ?? "",
+      "anthropic-version": "2023-06-01",
+    },
+    body: JSON.stringify({
+      model: "claude-sonnet-4-6",
+      max_tokens: 8000,
+      system: systemPrompt,
+      messages: [{ role: "user", content: userContent }],
+    }),
+  });
+
+  if (!res.ok) throw new Error(`Claude API 오류: ${res.status}`);
+  const data = await res.json();
+  return data.content?.[0]?.text ?? "";
 }
-`;
 
-// ─── 수정 모드 프롬프트 ──────────────────────────────────────────
-const editPrompt = (slideContext: unknown, message: string) => `
-${SKILL_SYSTEM_PROMPT}
+// ─── 메인 핸들러 ─────────────────────────────────────────────────
+export async function POST(req: NextRequest) {
+  try {
+    const { message, slideContext, pdfText, useGemini } = await req.json();
+    const isGenerateMode = !!pdfText;
 
-너는 현재 슬라이드를 사용자 요청에 따라 수정하는 편집 모드다.
+    // ── 생성 모드: Gemini 분석 → Claude 생성 ──────────────────────
+    if (isGenerateMode) {
+      let rawText: string;
+
+      if (useGemini && process.env.GOOGLE_AI_API_KEY) {
+        // 투트랙: Gemini 분석 → Claude 스토리보드
+        console.log("[1단계] Gemini로 원고 구조 분석 중...");
+        let geminiResult = "";
+        try {
+          geminiResult = await analyzeWithGemini(pdfText);
+        } catch (e) {
+          console.warn("Gemini 분석 실패, Claude 단독 모드로 전환:", e);
+        }
+
+        console.log("[2단계] Claude로 스토리보드 생성 중...");
+        rawText = await generateWithClaude(geminiResult, pdfText);
+
+      } else {
+        // 단일 모드: Claude만 사용
+        rawText = await generateWithClaude("", pdfText);
+      }
+
+      const cleaned = rawText.replace(/```json\s*/gi, "").replace(/```\s*/gi, "").trim();
+      try {
+        const parsed = JSON.parse(cleaned);
+        return NextResponse.json({ result: parsed });
+      } catch {
+        return NextResponse.json({ result: rawText, raw: true });
+      }
+    }
+
+    // ── 수정 모드: Claude만 사용 ──────────────────────────────────
+    const editPrompt = `
+너는 이러닝 스토리보드 편집 AI다.
+사용자 요청에 따라 현재 슬라이드를 수정하고 JSON으로만 응답해.
+순수 JSON만 출력 (코드블록 금지)
 
 현재 슬라이드:
 ${JSON.stringify(slideContext, null, 2)}
 
 사용자 요청: ${message}
 
-## 출력 규칙
-- { } 로 시작하고 끝나는 순수 JSON만 출력
-- 코드블록(\`\`\`), 설명, 주석 절대 금지
-- 수정하지 않는 필드도 그대로 포함할 것
-
 {
   "summary": "수정 내용 한 줄 요약",
-  "slide": {
-    "title": "",
-    "subtitle": "",
-    "elements": []
-  },
+  "slide": { ... },
   "narration": "수정된 나레이션 (150~200자, 구어체, #큐 포함)"
-}
-`;
+}`;
 
-// ─── API 핸들러 ──────────────────────────────────────────────────
-export async function POST(req: NextRequest) {
-  try {
-    const { message, slideContext, pdfText } = await req.json();
-
-    const isGenerateMode = !!pdfText;
-
-    const userContent = isGenerateMode
-      ? `원고를 분석하여 스토리보드를 생성해주세요.`
-      : message;
-
-    const systemContent = isGenerateMode
-      ? generatePrompt(pdfText)
-      : editPrompt(slideContext, message);
-
-    const response = await fetch("https://api.anthropic.com/v1/messages", {
+    const res = await fetch("https://api.anthropic.com/v1/messages", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        "x-api-key": process.env.ANTHROPIC_API_KEY || "",
+        "x-api-key": process.env.ANTHROPIC_API_KEY ?? "",
         "anthropic-version": "2023-06-01",
       },
       body: JSON.stringify({
         model: "claude-sonnet-4-6",
-        max_tokens: isGenerateMode ? 8000 : 2000,
-        system: systemContent,
-        messages: [{ role: "user", content: userContent }],
+        max_tokens: 2000,
+        system: "이러닝 스토리보드 편집 AI. JSON만 반환.",
+        messages: [{ role: "user", content: editPrompt }],
       }),
     });
 
-    if (!response.ok) {
-      const err = await response.text();
-      return NextResponse.json({ error: err }, { status: response.status });
-    }
+    const data = await res.json();
+    const rawText = data.content?.[0]?.text ?? "";
+    const cleaned = rawText.replace(/```json\s*/gi, "").replace(/```\s*/gi, "").trim();
 
-    const data = await response.json();
-    const rawText = data.content?.[0]?.text || "";
-
-    // JSON 파싱 (코드블록 제거 후 파싱)
-    const cleaned = rawText
-      .replace(/```json\s*/gi, "")
-      .replace(/```\s*/gi, "")
-      .trim();
-
-    let parsed;
     try {
-      parsed = JSON.parse(cleaned);
+      return NextResponse.json({ result: JSON.parse(cleaned) });
     } catch {
-      // JSON 파싱 실패 시 원문 반환
       return NextResponse.json({ result: rawText, raw: true });
     }
 
-    return NextResponse.json({ result: parsed });
-
-  } catch (error) {
-    console.error("API Error:", error);
-    return NextResponse.json(
-      { error: "Internal server error" },
-      { status: 500 }
-    );
+  } catch (err) {
+    console.error("API Error:", err);
+    return NextResponse.json({ error: "Internal server error" }, { status: 500 });
   }
 }
